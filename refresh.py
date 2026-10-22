@@ -330,7 +330,7 @@ def load_previous(pw, today):
 
 
 def main():
-    key, pw = os.environ.get("LN_KEY"), os.environ.get("EM_PASSPHRASE")
+    key, pw = (os.environ.get("LN_KEY") or "").strip(), (os.environ.get("EM_PASSPHRASE") or "").strip()
     if not key or not pw:
         sys.exit("Il manque le secret LN_KEY ou EM_PASSPHRASE.")
     if len(pw) < 16:
