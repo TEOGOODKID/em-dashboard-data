@@ -34,6 +34,8 @@ jobs:
         env:
           LN_KEY: ${{ secrets.LN_KEY }}
           EM_PASSPHRASE: ${{ secrets.EM_PASSPHRASE }}
+          GHL_TOKEN: ${{ secrets.GHL_TOKEN }}
+          GHL_LOCATION_ID: ${{ secrets.GHL_LOCATION_ID }}
           PREV_URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/data.txt
           FORCE_FULL: ${{ github.event.inputs.complet }}
         run: python refresh.py
