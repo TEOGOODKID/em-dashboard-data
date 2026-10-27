@@ -286,6 +286,133 @@ def build_pack(listings, raw, reviews, today, last_full, series_days=210):
     return pack, unmapped
 
 
+
+# =========================================================================== GoHighLevel (clients à traiter)
+GHL_API = "https://services.leadconnectorhq.com"
+
+
+class Ghl:
+    def __init__(self, token):
+        import requests
+        self.s = requests.Session()
+        self.s.headers.update({"Authorization": "Bearer " + token, "Version": "2021-07-28", "Accept": "application/json"})
+        self.lock = threading.Lock(); self.next = 0.0; self.requests = requests; self.calls = 0
+
+    def get(self, path, params=None, tries=5):
+        last = None
+        for i in range(tries):
+            with self.lock:
+                now = time.monotonic(); slot = max(self.next, now); self.next = slot + 0.25
+            if slot - now > 0:
+                time.sleep(slot - now)
+            try:
+                r = self.s.get(GHL_API + path, params=params, timeout=90); self.calls += 1
+                if r.status_code in (401, 403):
+                    raise SystemExit(f"GoHighLevel a refusé l'accès ({r.status_code}) : vérifiez GHL_TOKEN et ses permissions de lecture (opportunités, contacts, champs personnalisés).")
+                if r.status_code == 429 or r.status_code >= 500:
+                    time.sleep(2 ** i + random.random()); last = r.status_code; continue
+                r.raise_for_status()
+                return r.json()
+            except self.requests.RequestException as e:
+                last = str(e)[:120]; time.sleep(2 ** i + random.random())
+        raise RuntimeError(f"Échec GoHighLevel {path} : {last}")
+
+
+def _norm(s):
+    import unicodedata
+    s = unicodedata.normalize("NFD", str(s or "").lower())
+    return re.sub(r"[^a-z0-9 ]", " ", "".join(c for c in s if unicodedata.category(c) != "Mn"))
+
+
+def _toks(s):
+    return [t for t in _norm(s).split() if len(t) > 2]
+
+
+def _days(a, b):
+    return int((b - a).total_seconds() // 86400)
+
+
+def clients_from_ghl(opps, stages, field_ids, fiches, now):
+    """Une ligne par client actif (pas en Churn, pas perdu), mêmes champs que le tableau de bord."""
+    exp = dt.datetime(now.year, now.month, now.day, tzinfo=dt.timezone.utc)
+    by_name = [(f["id"], set(_toks(f["nom"]))) for f in fiches]
+    known = {f["id"] for f in fiches}
+
+    def parse(s):
+        return dt.datetime.fromisoformat(s.replace("Z", "+00:00")) if s else None
+
+    out = []
+    for o in opps:
+        etape = stages.get(o.get("pipelineStageId"), "")
+        if etape == "Churn" or o.get("status") == "lost":
+            continue
+        cfs = {c.get("id"): c for c in (o.get("customFields") or [])}
+
+        def val(name):
+            c = cfs.get(field_ids.get(name.strip().lower()))
+            if not c:
+                return None
+            if c.get("fieldValueDate") is not None:
+                return c["fieldValueDate"]
+            if c.get("fieldValueArray") is not None:
+                return ",".join(str(x) for x in c["fieldValueArray"])
+            return c.get("fieldValueString")
+
+        def date_of(name):
+            v = val(name)
+            return dt.datetime.fromtimestamp(v / 1000, tz=dt.timezone.utc) if isinstance(v, (int, float)) else None
+
+        created = parse(o.get("createdAt"))
+        start = date_of("Date début offre 129€") or date_of("Date début offre 250€") or created
+        tags = ((o.get("contact") or {}).get("tags")) or []
+        tg = ",".join(tags)
+        rrm = str(val("RRM") or "").strip().lower()
+        rrm = "Oui" if (rrm.startswith("oui") or rrm == "non,oui") else ("non" if rrm == "non" else "")
+        sat = ",".join(x for x in (val("Satisfaction"), val("Satisfaction 2")) if x)
+        upd, stg = parse(o.get("updatedAt")), parse(o.get("lastStageChangeAt"))
+        dm = date_of("Date du dernier message")
+        lnid = str(val("ID Local Nord") or "").strip()
+        if lnid not in known:
+            lnid = None
+            t = _toks((o.get("contact") or {}).get("name") or o.get("name"))
+            if len(t) >= 2:
+                c = [fid for fid, ft in by_name if all(x in ft for x in t)]
+                lnid = c[0] if len(c) == 1 else None
+        out.append({
+            "id": o["id"], "nom": str(o.get("name") or ""), "etape": etape,
+            "age_m": round(_days(start, exp) / 30.44, 1) if start else 0,
+            "rrm": rrm, "sat": sat, "gmb": val("Situation GMB") or "", "acces": val("Accès GMB") or "",
+            "maj_j": _days(upd, now) if upd else None, "etape_j": _days(stg, now) if stg else None,
+            "offre": "198€" if "198€" in tg else ("98€" if "98€" in tg else ""),
+            "no_rep": bool(re.search(r"sans rep|no rep", tg)), "lnid": lnid, "exp": now.date().isoformat(),
+            "dm_j": _days(dm, now) if dm else None,
+        })
+    return out
+
+
+def fetch_clients(token, location, fiches, now):
+    g = Ghl(token)
+    pipes = g.get("/opportunities/pipelines", {"locationId": location}).get("pipelines") or []
+    pipe = next((p for p in pipes if "clients gmb" in (p.get("name") or "").lower()), None)
+    if not pipe:
+        raise RuntimeError("Pipeline « Clients GMB » introuvable dans GoHighLevel.")
+    stages = {s["id"]: s["name"] for s in pipe.get("stages") or []}
+    fields = g.get(f"/locations/{location}/customFields", {"model": "opportunity"}).get("customFields") or []
+    field_ids = {f["name"].strip().lower(): f["id"] for f in fields}
+    params = {"location_id": location, "pipeline_id": pipe["id"], "status": "all", "limit": 100}
+    opps = []
+    for _ in range(60):
+        r = g.get("/opportunities/search", params)
+        opps += r.get("opportunities") or []
+        meta = r.get("meta") or {}
+        if not meta.get("nextPageUrl") or not meta.get("startAfterId"):
+            break
+        params = {**params, "startAfter": meta["startAfter"], "startAfterId": meta["startAfterId"]}
+    rows = clients_from_ghl(opps, stages, field_ids, fiches, now)
+    print(f"GoHighLevel : {len(opps)} opportunités lues, {len(rows)} clients actifs, {g.calls} appels", flush=True)
+    return rows
+
+
 # =========================================================================== chiffrement
 def encrypt_pack(pack, passphrase):
     from cryptography.hazmat.primitives import hashes
@@ -309,6 +436,7 @@ def decrypt_pack(blob, passphrase):
 
 def load_previous(pw, today):
     """Fiches de la veille (pour le mode léger). Le lundi, ou si introuvable : None = actualisation complète."""
+    load_previous.clients = []
     if os.environ.get("FORCE_FULL") or today.weekday() == 0:
         print("Mode COMPLET (lundi ou demandé).", flush=True); return None
     try:
@@ -322,7 +450,9 @@ def load_previous(pw, today):
             blob = r.text
         else:
             print("Pas d'adresse des données de la veille -> mode COMPLET.", flush=True); return None
-        prev = {f["id"]: f for f in decrypt_pack(blob, pw)["fiches"]}
+        old = decrypt_pack(blob, pw)
+        prev = {f["id"]: f for f in old["fiches"]}
+        load_previous.clients = old.get("clients") or []
         print(f"Mode LÉGER : {len(prev)} fiches reprises de la veille pour score, réseaux, photos et publications.", flush=True)
         return prev
     except Exception as e:
@@ -345,13 +475,25 @@ def main():
     pack, unmapped = build_pack(listings, raw, reviews, today, last_full)
     if unmapped:
         print("ATTENTION : catégories sans secteur (à ajouter dans sectors.py) :", unmapped, flush=True)
+    token, loc = (os.environ.get("GHL_TOKEN") or "").strip(), (os.environ.get("GHL_LOCATION_ID") or "").strip()
+    if token and loc:
+        try:
+            pack["clients"] = fetch_clients(token, loc, pack["fiches"], dt.datetime.now(dt.timezone.utc))
+        except SystemExit:
+            raise
+        except Exception as e:
+            print("ATTENTION : lecture GoHighLevel impossible, clients de la veille conservés :", str(e)[:150], flush=True)
+            pack["clients"] = getattr(load_previous, "clients", [])
+    else:
+        print("GHL_TOKEN ou GHL_LOCATION_ID absent : l'onglet « À traiter » restera vide.", flush=True)
+        pack["clients"] = getattr(load_previous, "clients", [])
     blob = encrypt_pack(pack, pw)
     os.makedirs(out_dir, exist_ok=True)
     open(os.path.join(out_dir, "data.txt"), "w", encoding="ascii").write(blob)
     open(os.path.join(out_dir, "index.html"), "w", encoding="utf-8").write(
         "<!doctype html><meta charset='utf-8'><title>Données</title><p>Données chiffrées du dashboard Elite Média.</p>")
     print(f"OK : {len(pack['fiches'])} fiches, {len(pack['jours']['n'])} lignes par jour, {len(pack['avis']['n'])} avis | "
-          f"data.txt = {len(blob) // 1024} Ko | données du {today.isoformat()} (stats complètes jusqu'au {last_full.isoformat()})", flush=True)
+          f"{len(pack['clients'])} clients | data.txt = {len(blob) // 1024} Ko | données du {today.isoformat()} (stats complètes jusqu'au {last_full.isoformat()})", flush=True)
 
 
 if __name__ == "__main__":
