@@ -11,6 +11,7 @@ Variables d'environnement :
   LAG_DAYS        retard supposé de Google en jours (défaut 8)
   Pour les tests : LIMIT (nombre de fiches), REVIEW_DAYS (jours d'avis), TODAY (AAAA-MM-JJ), OUT_DIR
 """
+import hashlib
 import base64, datetime as dt, gzip, json, os, re, sys, threading, time, random
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urlparse
@@ -371,6 +372,7 @@ def clients_from_ghl(opps, stages, field_ids, fiches, now):
         sat = ",".join(x for x in (val("Satisfaction"), val("Satisfaction 2")) if x)
         upd, stg = parse(o.get("updatedAt")), parse(o.get("lastStageChangeAt"))
         dm = date_of("Date du dernier message")
+        ct = date_of("Dernier contact équipe")      # champ à créer dans GoHighLevel : alimenté par l'envoi validé / la routine
         lnid = str(val("ID Local Nord") or "").strip()
         if lnid not in known:
             lnid = None
@@ -386,6 +388,9 @@ def clients_from_ghl(opps, stages, field_ids, fiches, now):
             "offre": "198€" if "198€" in tg else ("98€" if "98€" in tg else ""),
             "no_rep": bool(re.search(r"sans rep|no rep", tg)), "lnid": lnid, "exp": now.date().isoformat(),
             "dm_j": _days(dm, now) if dm else None,
+            "ct_j": _days(ct, now) if ct else None,
+            "resp": str(o.get("assignedTo") or ""),
+            "val": o.get("monetaryValue") or None,
         })
     return out
 
@@ -409,6 +414,12 @@ def fetch_clients(token, location, fiches, now):
             break
         params = {**params, "startAfter": meta["startAfter"], "startAfterId": meta["startAfterId"]}
     rows = clients_from_ghl(opps, stages, field_ids, fiches, now)
+    fetch_clients.churned = {}
+    for o in opps:
+        if stages.get(o.get("pipelineStageId"), "") == "Churn" or o.get("status") == "lost":
+            d = str(o.get("lastStageChangeAt") or o.get("updatedAt") or "")[:10]
+            if d:
+                fetch_clients.churned[o["id"]] = d
     print(f"GoHighLevel : {len(opps)} opportunités lues, {len(rows)} clients actifs, {g.calls} appels", flush=True)
     return rows
 
@@ -459,6 +470,227 @@ def load_previous(pw, today):
         print("Données de la veille illisibles -> mode COMPLET :", str(e)[:100], flush=True); return None
 
 
+# =========================================================================== comptes et rôles
+SETUP_RE = re.compile(r"SET UP GMB|Set up GMB|Appel Onboarding|Relance after|CLOSING", re.I)
+SENSITIVE = ("sat", "no_rep", "ct_j", "dm_j", "maj_j")           # infos de churn : réservées à l'admin et au CSM
+ROLES = {
+    "admin": {"tabs": ["today", "clients", "setup", "renew", "overview", "sectors", "compare", "week", "rank", "reports", "table", "accounts"],
+              "reports": ["client", "week", "dir"], "first": "today"},
+    "csm":   {"tabs": ["today", "clients", "reports", "table"], "reports": ["client", "week"], "first": "today"},
+    "gmb":   {"tabs": ["setup", "overview", "sectors", "compare", "week", "rank", "reports", "table"], "reports": ["client"], "first": "setup"},
+    "sales": {"tabs": ["renew", "overview", "sectors", "compare", "rank", "reports", "table"], "reports": ["client"], "first": "renew"},
+}
+
+
+def user_key(uid):
+    return hashlib.sha256(uid.strip().lower().encode("utf-8")).hexdigest()[:24]
+
+
+def clients_for(user, role, clients):
+    """Les clients que ce compte a le droit de recevoir (le filtrage se fait ici, avant le chiffrement)."""
+    def strip(c):
+        return {k: v for k, v in c.items() if k not in SENSITIVE}
+    if role == "admin":
+        return clients
+    if role == "gmb":
+        return [strip(c) for c in clients if SETUP_RE.search(c.get("etape") or "")]
+    if role == "sales":
+        return [strip(c) for c in clients if not SETUP_RE.search(c.get("etape") or "")]
+    ids = set(user.get("ghl_user") or [])                         # csm : seulement ses clients si des identifiants sont donnés
+    return [c for c in clients if not SETUP_RE.search(c.get("etape") or "") and (not ids or c.get("resp") in ids)]
+
+
+def write_user_files(pack, raw_users, out_dir):
+    try:
+        users = json.loads(raw_users)
+        assert isinstance(users, list) and users
+    except Exception:
+        sys.exit("Le secret EM_USERS doit être une liste JSON : [{\"id\":\"prenom\",\"name\":\"Prénom\",\"role\":\"csm\",\"password\":\"...\"}]")
+    d = os.path.join(out_dir, "u")
+    os.makedirs(d, exist_ok=True)
+    seen, counts = set(), {}
+    for u in users:
+        uid = str(u.get("id") or "").strip().lower()
+        role = str(u.get("role") or "").strip().lower()
+        pw = str(u.get("password") or "")
+        if not re.fullmatch(r"[a-z0-9._-]{2,40}", uid):
+            sys.exit(f"EM_USERS : identifiant invalide « {uid} » (lettres minuscules, chiffres, . _ - ; 2 à 40 caractères).")
+        if uid in seen:
+            sys.exit(f"EM_USERS : identifiant en double « {uid} ».")
+        if role not in ROLES:
+            sys.exit(f"EM_USERS : rôle inconnu « {role} » pour {uid} (admin, csm, gmb, sales).")
+        if len(pw) < 10:
+            sys.exit(f"EM_USERS : mot de passe trop court pour {uid} (10 caractères minimum).")
+        seen.add(uid)
+        profile = {"id": uid, "name": str(u.get("name") or uid), "role": role, **ROLES[role]}
+        sub = {**pack, "clients": clients_for(u, role, pack.get("clients") or []), "profile": profile}
+        if role != "admin":
+            sub.pop("calib", None)
+        open(os.path.join(d, user_key(uid) + ".txt"), "w", encoding="ascii").write(encrypt_pack(sub, pw))
+        counts[uid] = (role, len(sub["clients"]))
+    open(os.path.join(d, "enabled.txt"), "w", encoding="ascii").write("1")
+    print("Comptes : " + ", ".join(f"{k} ({v[0]}, {v[1]} clients)" for k, v in counts.items()), flush=True)
+
+
+# =========================================================================== historique des feux
+# Chaque matin on garde, pour chaque client, les SIGNAUX BRUTS (pas la couleur) : on pourra ainsi recalculer les feux avec
+# d'autres réglages et mesurer, après quelques semaines, quels signaux annoncent vraiment un départ.
+# Le fichier est chiffré (mot de passe du dashboard) et versionné dans le dépôt : history/feux.enc
+HIST_PATH = os.environ.get("HIST_PATH", "history/feux.enc")
+DEF_W = {"flag": 4, "sat": 2, "win": 1, "nrep": 2, "ech1": 2, "ech2": 3, "rdv": 1, "maj60": 1, "vues": 2, "avis": 2, "chute": 2, "thr_j": 2, "thr_r": 4}
+SIGNALS = [("flag", "« Risque de churn » noté"), ("sat", "Satisfaction basse (30 ou 50 %)"), ("win", "Mensuel, mois 2 à 4"), ("nrep", "Sans réponse (étiquette)"),
+           ("ech1", "Échéance dans 1 mois"), ("ech2", "Échéance dans 7 jours"), ("rdv", "RDV bilan à planifier"), ("maj60", "Aucune mise à jour depuis 60 jours"),
+           ("vues", "Vues en baisse de 20 % et plus (3 mois)"), ("avis", "Avis 1-2 étoiles récent"), ("chute", "Vues en chute sur 30 jours")]
+
+
+def _ev3(f):
+    n = min(5, int(f.get("mois_dispo") or 0))
+    if n < 3:
+        return None
+
+    def tot(t0, t1):
+        s_ = 0
+        for t in range(t0, t1 + 1):
+            v = f.get(f"v_m{t}") if t >= 1 else f.get(f"v_p{1 - t}")
+            if v is None:
+                return None
+            s_ += v
+        return s_
+    last, prev = tot(n - 2, n), tot(n - 5, n - 3)
+    return (last / prev - 1) if last is not None and prev else None
+
+
+def client_features(pack, clients, today, last_full):
+    base = dt.date.fromisoformat(pack["base"])
+    fiches = {f["id"]: f for f in pack["fiches"]}
+    lo, cut = {}, (today - dt.timedelta(days=30) - base).days
+    av = pack.get("avis") or {}
+    for n, d, r in zip(av.get("n", []), av.get("d", []), av.get("r", [])):
+        if d >= cut and r is not None and r <= 2:
+            lo[n] = lo.get(n, 0) + 1
+    o2 = (last_full - base).days
+    o1, p2, p1 = o2 - 27, o2 - 28, o2 - 55
+    cur, prv = {}, {}
+    jr = pack.get("jours") or {}
+    for n, d, v in zip(jr.get("n", []), jr.get("d", []), jr.get("v", [])):
+        t = cur if o1 <= d <= o2 else (prv if p1 <= d <= p2 else None)
+        if t is None:
+            continue
+        a = t.setdefault(n, [0, 0])
+        a[0] += v or 0
+        a[1] += 1
+    rows = [(n, prv[n][0], cur[n][0]) for n in cur if n in prv and cur[n][1] >= 20 and prv[n][1] >= 20 and prv[n][0] >= 60]
+    sp, sc = sum(r[1] for r in rows), sum(r[2] for r in rows)
+    g = (sc / sp) if sp else 1
+    ch = {n: (c / p) / g - 1 for n, p, c in rows}
+    out = []
+    for c in clients:
+        f = fiches.get(c.get("lnid"))
+        idx = f.get("idx") if f else None
+        sat = c.get("sat") or ""
+        ev, chv = (_ev3(f) if f else None), (ch.get(idx) if f else None)
+        out.append({
+            "i": c["id"], "e": c.get("etape") or "", "a": c.get("age_m"), "r": 1 if c.get("rrm") == "Oui" else 0,
+            "s": 2 if re.search(r"risque", sat, re.I) else (1 if re.search(r"(^|[^0-9])(30|50)\s?%", sat) else 0),
+            "n": 1 if c.get("no_rep") else 0, "j": c.get("maj_j"), "ct": c.get("ct_j"), "dm": c.get("dm_j"),
+            "ev": round(ev, 3) if ev is not None else None, "lo": (lo.get(idx, 0) if f else None),
+            "ch": round(chv, 3) if chv is not None else None, "f": 1 if f else 0, "v": c.get("val"),
+        })
+    return out
+
+
+def feu_of(ft, W=DEF_W):
+    e, age, sigs, pts, flag = ft.get("e") or "", ft.get("a") or 0, [], 0, False
+
+    def add(k, w):
+        nonlocal pts
+        if w > 0:
+            sigs.append(k)
+            pts += w
+    if ft.get("s") == 2:
+        add("flag", W["flag"]); flag = True
+    elif ft.get("s") == 1:
+        add("sat", W["sat"])
+    if ft.get("r") and 2 <= age <= 4:
+        add("win", W["win"])
+    if ft.get("n"):
+        add("nrep", W["nrep"])
+    if re.search(r"Reste 7 jours", e, re.I):
+        add("ech2", W["ech2"])
+    elif re.search(r"Reste 1 mois", e, re.I):
+        add("ech1", W["ech1"])
+    if re.search(r"RDV \d ?mois à traiter", e, re.I):
+        add("rdv", W["rdv"])
+    if (ft.get("j") or 0) >= 60:
+        add("maj60", W["maj60"])
+    if ft.get("ev") is not None and ft["ev"] <= -0.2:
+        add("vues", W["vues"])
+    if ft.get("lo"):
+        add("avis", W["avis"])
+    if ft.get("ch") is not None and ft["ch"] <= -0.35:
+        add("chute", W["chute"])
+    return ("rouge" if flag or pts >= W["thr_r"] else ("jaune" if pts >= W["thr_j"] else "vert")), sigs
+
+
+def load_history(pw):
+    try:
+        return decrypt_pack(open(HIST_PATH, encoding="ascii").read(), pw)
+    except FileNotFoundError:
+        return {"v": 1, "days": {}, "churn": {}}
+    except Exception as e:
+        print("ATTENTION : historique des feux illisible, il n'est PAS modifié :", str(e)[:100], flush=True)
+        return None
+
+
+def update_history(pack, churned, pw, today, last_full):
+    h = load_history(pw)
+    if h is None:
+        return None
+    h["days"][today.isoformat()] = client_features(pack, pack["clients"], today, last_full)
+    for k, v in (churned or {}).items():
+        h["churn"].setdefault(k, v)
+    d = os.path.dirname(HIST_PATH)
+    if d:
+        os.makedirs(d, exist_ok=True)
+    open(HIST_PATH, "w", encoding="ascii").write(encrypt_pack(h, pw))
+    return h
+
+
+def calibration(h, today):
+    days = sorted(h["days"])
+    out = {"days": len(days), "first": days[0] if days else None, "mature": 0, "departures": 0, "wait": 30, "colors": {}, "signals": []}
+    if not days:
+        return out
+    first = dt.date.fromisoformat(days[0])
+    churn = {k: dt.date.fromisoformat(v) for k, v in h["churn"].items()}
+    out["departures"] = sum(1 for d in churn.values() if d > first)
+    out["wait"] = max(0, 30 - (today - first).days)
+    col = {c: [0, 0] for c in ("rouge", "jaune", "vert")}
+    sig = {k: [0, 0, 0, 0] for k, _ in SIGNALS}
+    for ds in days:
+        D = dt.date.fromisoformat(ds)
+        if (today - D).days < 30:
+            continue
+        out["mature"] += 1
+        for ft in h["days"][ds]:
+            if SETUP_RE.search(ft.get("e") or ""):
+                continue
+            color, sigs = feu_of(ft)
+            c = churn.get(ft["i"])
+            dep = 1 if (c and D < c <= D + dt.timedelta(days=30)) else 0
+            col[color][0] += 1
+            col[color][1] += dep
+            for k, _ in SIGNALS:
+                a = sig[k]
+                if k in sigs:
+                    a[0] += 1; a[1] += dep
+                else:
+                    a[2] += 1; a[3] += dep
+    out["colors"] = {c: {"n": v[0], "dep": v[1]} for c, v in col.items()}
+    out["signals"] = [{"k": k, "label": lab, "n": sig[k][0], "dep": sig[k][1], "n0": sig[k][2], "dep0": sig[k][3]} for k, lab in SIGNALS if sig[k][0] > 0]
+    return out
+
+
 def main():
     key, pw = (os.environ.get("LN_KEY") or "").strip(), (os.environ.get("EM_PASSPHRASE") or "").strip()
     if not key or not pw:
@@ -475,10 +707,12 @@ def main():
     pack, unmapped = build_pack(listings, raw, reviews, today, last_full)
     if unmapped:
         print("ATTENTION : catégories sans secteur (à ajouter dans sectors.py) :", unmapped, flush=True)
+    fresh_clients = False
     token, loc = (os.environ.get("GHL_TOKEN") or "").strip(), (os.environ.get("GHL_LOCATION_ID") or "").strip()
     if token and loc:
         try:
             pack["clients"] = fetch_clients(token, loc, pack["fiches"], dt.datetime.now(dt.timezone.utc))
+            fresh_clients = True
         except SystemExit:
             raise
         except Exception as e:
@@ -487,9 +721,19 @@ def main():
     else:
         print("GHL_TOKEN ou GHL_LOCATION_ID absent : l'onglet « À traiter » restera vide.", flush=True)
         pack["clients"] = getattr(load_previous, "clients", [])
+    try:
+        h = update_history(pack, getattr(fetch_clients, "churned", None), pw, today, last_full) if fresh_clients else load_history(pw)
+        if h is not None:
+            pack["calib"] = calibration(h, today)
+            print(f"Historique des feux : {pack['calib']['days']} jour(s), {pack['calib']['departures']} départ(s) observé(s), {pack['calib']['mature']} relevé(s) mûr(s).", flush=True)
+    except Exception as e:
+        print("ATTENTION : historique des feux ignoré :", str(e)[:150], flush=True)
     blob = encrypt_pack(pack, pw)
     os.makedirs(out_dir, exist_ok=True)
     open(os.path.join(out_dir, "data.txt"), "w", encoding="ascii").write(blob)
+    raw_users = (os.environ.get("EM_USERS") or "").strip()
+    if raw_users:
+        write_user_files(pack, raw_users, out_dir)
     open(os.path.join(out_dir, "index.html"), "w", encoding="utf-8").write(
         "<!doctype html><meta charset='utf-8'><title>Données</title><p>Données chiffrées du dashboard Elite Média.</p>")
     print(f"OK : {len(pack['fiches'])} fiches, {len(pack['jours']['n'])} lignes par jour, {len(pack['avis']['n'])} avis | "
