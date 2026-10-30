@@ -333,6 +333,50 @@ def _days(a, b):
     return int((b - a).total_seconds() // 86400)
 
 
+WA_CODES = ("RESIL", "REMB", "DECU")      # demande d'arrêt, remboursement / prélèvement contesté, déception
+_WA_SYN = [(re.compile(r"resil|résil|arr[êe]t|stop|annul|fin de contrat", re.I), "RESIL"),
+           (re.compile(r"rembours|pr[ée]l[èe]vement|avoir|litige|opposition", re.I), "REMB"),
+           (re.compile(r"d[ée][cç]u|d[ée]ception|m[ée]content|insatisf|friche", re.I), "DECU")]
+
+
+def parse_wa(raw, exp):
+    """Étiquette écrite par la routine WhatsApp. Format voulu : « CODE|AAAA-MM-JJ|libellé », mais on accepte aussi
+    « RESIL 2026-10-29 » ou « Demande d'arrêt 2026-10-29 ». Renvoie (code, jours depuis l'alerte, libellé)."""
+    if not raw:
+        return None, None, None
+    raw = str(raw).strip()
+    code = None
+    m = re.match(r"\s*(RESIL|REMB|DECU)\b", raw, re.I)
+    if m:
+        code = m.group(1).upper()
+    else:
+        for rx, c in _WA_SYN:
+            if rx.search(raw):
+                code = c
+                break
+    if code is None:
+        return None, None, None
+    d = None
+    m = re.search(r"(\d{4})-(\d{2})-(\d{2})", raw)
+    if m:
+        try:
+            d = dt.datetime(int(m.group(1)), int(m.group(2)), int(m.group(3)), tzinfo=dt.timezone.utc)
+        except ValueError:
+            d = None
+    else:
+        m = re.search(r"(\d{1,2})/(\d{1,2})/(\d{4})", raw)
+        if m:
+            try:
+                d = dt.datetime(int(m.group(3)), int(m.group(2)), int(m.group(1)), tzinfo=dt.timezone.utc)
+            except ValueError:
+                d = None
+    days = max(0, (exp - d).days) if d else 14      # sans date : on suppose 14 jours, pour que l'alerte finisse par expirer
+    if days > 60:
+        return None, None, None
+    parts = [p.strip() for p in raw.split("|")]
+    return code, days, (parts[2][:60] if len(parts) > 2 and parts[2] else None)
+
+
 def clients_from_ghl(opps, stages, field_ids, fiches, now):
     """Une ligne par client actif (pas en Churn, pas perdu), mêmes champs que le tableau de bord."""
     exp = dt.datetime(now.year, now.month, now.day, tzinfo=dt.timezone.utc)
@@ -360,8 +404,22 @@ def clients_from_ghl(opps, stages, field_ids, fiches, now):
             return c.get("fieldValueString")
 
         def date_of(name):
+            """Accepte un champ Date (horodatage) ou un champ Texte (« AAAA-MM-JJ » ou « JJ/MM/AAAA »)."""
             v = val(name)
-            return dt.datetime.fromtimestamp(v / 1000, tz=dt.timezone.utc) if isinstance(v, (int, float)) else None
+            if isinstance(v, (int, float)):
+                return dt.datetime.fromtimestamp(v / 1000, tz=dt.timezone.utc)
+            if isinstance(v, str):
+                m = re.match(r"\s*(\d{4})-(\d{2})-(\d{2})", v)
+                d_ = (int(m.group(3)), int(m.group(2)), int(m.group(1))) if m else None
+                if not m:
+                    m = re.match(r"\s*(\d{1,2})/(\d{1,2})/(\d{4})", v)
+                    d_ = (int(m.group(1)), int(m.group(2)), int(m.group(3))) if m else None
+                if d_:
+                    try:
+                        return dt.datetime(d_[2], d_[1], d_[0], tzinfo=dt.timezone.utc)
+                    except ValueError:
+                        return None
+            return None
 
         created = parse(o.get("createdAt"))
         start = date_of("Date début offre 129€") or date_of("Date début offre 250€") or created
@@ -371,8 +429,9 @@ def clients_from_ghl(opps, stages, field_ids, fiches, now):
         rrm = "Oui" if (rrm.startswith("oui") or rrm == "non,oui") else ("non" if rrm == "non" else "")
         sat = ",".join(x for x in (val("Satisfaction"), val("Satisfaction 2")) if x)
         upd, stg = parse(o.get("updatedAt")), parse(o.get("lastStageChangeAt"))
-        dm = date_of("Date du dernier message")
-        ct = date_of("Dernier contact équipe")      # champ à créer dans GoHighLevel : alimenté par l'envoi validé / la routine
+        dm = date_of("WA - Dernier message client") or date_of("Date du dernier message")
+        ct = date_of("WA - Dernier message équipe") or date_of("Dernier contact équipe")      # alimentés chaque matin par la routine WhatsApp
+        wa_c, wa_d, wa_t = parse_wa(val("WA - Alerte"), exp)
         lnid = str(val("ID Local Nord") or "").strip()
         if lnid not in known:
             lnid = None
@@ -391,6 +450,7 @@ def clients_from_ghl(opps, stages, field_ids, fiches, now):
             "ct_j": _days(ct, now) if ct else None,
             "resp": str(o.get("assignedTo") or ""),
             "val": o.get("monetaryValue") or None,
+            "wa_c": wa_c, "wa_d": wa_d, "wa_t": wa_t,
         })
     return out
 
@@ -472,7 +532,7 @@ def load_previous(pw, today):
 
 # =========================================================================== comptes et rôles
 SETUP_RE = re.compile(r"SET UP GMB|Set up GMB|Appel Onboarding|Relance after|CLOSING", re.I)
-SENSITIVE = ("sat", "no_rep", "ct_j", "dm_j", "maj_j")           # infos de churn : réservées à l'admin et au CSM
+SENSITIVE = ("sat", "no_rep", "ct_j", "dm_j", "maj_j", "wa_c", "wa_d", "wa_t")           # infos de churn : réservées à l'admin et au CSM
 ROLES = {
     "admin": {"tabs": ["today", "clients", "setup", "renew", "overview", "sectors", "compare", "week", "rank", "reports", "table", "accounts"],
               "reports": ["client", "week", "dir"], "first": "today"},
@@ -537,10 +597,12 @@ def write_user_files(pack, raw_users, out_dir):
 # d'autres réglages et mesurer, après quelques semaines, quels signaux annoncent vraiment un départ.
 # Le fichier est chiffré (mot de passe du dashboard) et versionné dans le dépôt : history/feux.enc
 HIST_PATH = os.environ.get("HIST_PATH", "history/feux.enc")
-DEF_W = {"flag": 4, "sat": 2, "win": 1, "nrep": 2, "ech1": 2, "ech2": 3, "rdv": 1, "maj60": 1, "vues": 2, "avis": 2, "chute": 2, "thr_j": 2, "thr_r": 4}
+DEF_W = {"war": 4, "wam": 3, "wad": 2, "sil": 1, "flag": 4, "sat": 2, "win": 1, "nrep": 2, "ech1": 2, "ech2": 3, "rdv": 1, "maj60": 1, "vues": 2, "avis": 2, "chute": 2, "thr_j": 2, "thr_r": 4}
 SIGNALS = [("flag", "« Risque de churn » noté"), ("sat", "Satisfaction basse (30 ou 50 %)"), ("win", "Mensuel, mois 2 à 4"), ("nrep", "Sans réponse (étiquette)"),
            ("ech1", "Échéance dans 1 mois"), ("ech2", "Échéance dans 7 jours"), ("rdv", "RDV bilan à planifier"), ("maj60", "Aucune mise à jour depuis 60 jours"),
-           ("vues", "Vues en baisse de 20 % et plus (3 mois)"), ("avis", "Avis 1-2 étoiles récent"), ("chute", "Vues en chute sur 30 jours")]
+           ("vues", "Vues en baisse de 20 % et plus (3 mois)"), ("avis", "Avis 1-2 étoiles récent"), ("chute", "Vues en chute sur 30 jours"),
+           ("wa_resil", "Demande d'arrêt sur WhatsApp"), ("wa_remb", "Remboursement ou prélèvement contesté (WhatsApp)"),
+           ("wa_decu", "Déception exprimée sur WhatsApp"), ("silence", "Client silencieux depuis 30 jours")]
 
 
 def _ev3(f):
@@ -595,6 +657,7 @@ def client_features(pack, clients, today, last_full):
             "n": 1 if c.get("no_rep") else 0, "j": c.get("maj_j"), "ct": c.get("ct_j"), "dm": c.get("dm_j"),
             "ev": round(ev, 3) if ev is not None else None, "lo": (lo.get(idx, 0) if f else None),
             "ch": round(chv, 3) if chv is not None else None, "f": 1 if f else 0, "v": c.get("val"),
+            "wa": c.get("wa_c"), "wd": c.get("wa_d"),
         })
     return out
 
@@ -629,6 +692,17 @@ def feu_of(ft, W=DEF_W):
         add("avis", W["avis"])
     if ft.get("ch") is not None and ft["ch"] <= -0.35:
         add("chute", W["chute"])
+    wa, wd = ft.get("wa"), ft.get("wd")
+    if wa and wd is not None and wd <= 30:
+        if wa == "RESIL":
+            add("wa_resil", W["war"])
+            flag = flag or W["war"] > 0
+        elif wa == "REMB":
+            add("wa_remb", W["wam"])
+        elif wa == "DECU":
+            add("wa_decu", W["wad"])
+    if ft.get("dm") is not None and ft["dm"] >= 30:
+        add("silence", W["sil"])
     return ("rouge" if flag or pts >= W["thr_r"] else ("jaune" if pts >= W["thr_j"] else "vert")), sigs
 
 
