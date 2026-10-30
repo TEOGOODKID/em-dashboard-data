@@ -38,15 +38,20 @@ def nf(n):
     return f"{int(round(n)):,}".replace(",", " ")
 
 
+FN = set("""jean pierre michel philippe alain patrick nicolas christophe laurent eric daniel frederic franck frank sebastien julien david thomas stephane olivier pascal marc vincent bruno guillaume yannick cedric alexandre antoine mathieu maxime romain kevin jeremy anthony benjamin adrien quentin florian hugo lucas louis arnaud fabrice fabien gilles gerard bernard didier thierry christian dominique jacques claude henri paul rene serge joel yves lionel ludovic samuel sam gio ali abdel brice alan jessy loic damien gary cyril remi raphael theo nathan enzo tony steven dylan jordan lilian mickael michael jonathan johan jerome gregory gregoire stephen xavier emmanuel manuel marie nathalie isabelle sylvie catherine christine sandrine valerie stephanie veronique sophie aurelie celine laurence julie emilie camille laura sarah karine carine corinne virginie audrey marion pauline charlotte elodie melanie delphine sabine claire anne fatma nadine tracy jeanne carla jade lea manon chloe ines emma lisa nicole martine monique francoise brigitte patricia sandra severine magali cecile helene florence agnes josiane mohamed mohammed mehdi ahmed ahmad youssef yassine karim samir nabil hakim hicham rachid mustapha mourad omar othmane said tahar kheiredine bilal amine walid sofiane ismael ibrahim abdelkader abdelhak hedi sami slim farid fouad jamel kamel karima samira nadia leila amel yasmine imane sonia fatima aicha khadija carlo carmelo santo giovanni marco luca antonio jose carlos miguel joao pedro nikolas nikos vasilis dimitri ghanem seth yasar gaetan guy herve jean-marc jean-pierre jean-luc jean-michel""".split())
+TITRES = {"mr", "m", "mme", "mlle", "madame", "monsieur", "dr", "me", "maitre"}
+
+
 def first_name(nom):
+    """Prénom seulement quand il est reconnu : sinon on écrit « Bonjour, » plutôt que de risquer une erreur."""
     nom = re.split(r"\s+[-–—]\s+", str(nom or ""))[0]
-    toks = [t for t in re.split(r"[\s/]+", nom) if t]
-    up = lambda t: len(t) > 1 and t.isupper()
-    cands = [t for t in toks if not up(t)]
-    if not cands:
-        return ""
-    t = cands[0]
-    return t[:1].upper() + t[1:]
+    toks = [t.strip(".,") for t in re.split(r"[\s/]+", nom) if t.strip(".,")]
+    toks = [t for t in toks if t.lower() not in TITRES]
+    norm = lambda t: re.sub(r"[éèêë]", "e", re.sub(r"[àâä]", "a", re.sub(r"[îï]", "i", re.sub(r"[ôö]", "o", re.sub(r"[ûüù]", "u", t.lower())))))
+    for t in toks[:2]:
+        if norm(t) in FN:
+            return t[:1].upper() + t[1:].lower()
+    return ""
 
 
 # --------------------------------------------------------------------------- données
@@ -83,20 +88,22 @@ def fiche_metrics(f):
 
 
 def positives(c, fiches):
-    """Phrase positive vraie et sourcée. Renvoie (texte, type, source) ; type = « stats » ou « bilan »."""
+    """Phrase positive vraie et sourcée. Renvoie (texte, type, source) ; type = « stats », « note » ou « bilan »."""
     f = fiches.get(c.get("lnid")) if c.get("lnid") else None
     m = fiche_metrics(f) if f else None
     if m:
-        frags = []
-        v, a = m["v"], m["a"]
+        growth, v, a = [], m["v"], m["a"]
         if v[0] and v[1] and v[1] >= 30 and v[0] / v[1] - 1 >= 0.10:
-            frags.append(f"visibilité en hausse de {round((v[0] / v[1] - 1) * 100)} % ({nf(v[0])} vues contre {nf(v[1])})")
+            growth.append(f"visibilité en hausse de {round((v[0] / v[1] - 1) * 100)} % ({nf(v[0])} vues contre {nf(v[1])})")
         if a[0] is not None and a[1] is not None and a[0] > a[1] and a[0] >= 5:
-            frags.append(f"{a[0]} appels contre {a[1]}")
+            growth.append(f"{a[0]} appels contre {a[1]}")
+        note = None
         if m["note"] and m["avis"] and m["note"] >= 4.5 and m["avis"] >= 10:
-            frags.append(f"une note de {str(round(m['note'], 1)).replace('.', ',')} sur {m['avis']} avis")
-        if frags:
-            return ", ".join(frags[:3]), "stats", "Statistiques Google de la fiche reliée"
+            note = ("5 étoiles" if m["note"] >= 4.95 else str(round(m["note"], 1)).replace(".", ",")) + f" sur {m['avis']} avis"
+        if growth:
+            return ", ".join(growth + ([f"une note de {note}"] if note else [])), "stats", "Statistiques Google de la fiche reliée"
+        if note:
+            return note, "note", "Statistiques Google de la fiche reliée"
     if c.get("pf"):
         bl = []
         for b in c["pf"][:2]:
@@ -129,21 +136,28 @@ def reason_text(key, ft):
     }.get(key, key)
 
 
-def compose(c, key, pos, kind):
+def compose(c, key, pos, kind, wd=None):
     p = first_name(c.get("nom"))
     hello = f"Bonjour {p}," if p else "Bonjour,"
-    lead = "Ces derniers mois, la fiche a progressé : " if kind == "stats" else "Pour mémoire, au dernier bilan : "
+    def phrase(fin):
+        if not pos:
+            return ""
+        if kind == "stats":
+            return f"Ces derniers mois, la fiche a progressé : {pos}."
+        if kind == "note":
+            return f"Votre fiche affiche {pos}, un vrai atout auprès de vos futurs clients."
+        return f"Pour mémoire, au dernier bilan : {pos}."
     par = [hello]
     if key == "wa_resil":
-        par.append("Merci pour votre message, je comprends votre démarche.")
+        par.append("Merci pour votre message, je comprends votre démarche." if (wd is not None and wd <= 5) else "Je reviens vers vous au sujet de votre demande d’arrêt.")
         par.append("Je préfère qu’on en parle de vive voix : je peux vous appeler aujourd’hui ? Dites-moi le créneau qui vous arrange.")
         if pos:
-            par.append(f"{lead}{pos}. On trouvera ensemble la meilleure solution pour vous.")
+            par.append(phrase(0) + " On trouvera ensemble la meilleure solution pour vous.")
     elif key == "wa_remb":
         par.append("Je vérifie votre dossier de facturation et je vous appelle aujourd’hui pour en parler avec vous.")
         par.append("Si vous préférez un autre moment, dites-le-moi ici.")
     elif key == "wa_decu":
-        par.append("Merci pour votre franchise, vous avez raison d’attendre des résultats concrets." + (f" Voici où en est la fiche : {pos}." if pos and kind == "stats" else (f" Pour mémoire, au dernier bilan : {pos}." if pos else "")))
+        par.append("Merci pour votre franchise, vous avez raison d’attendre des résultats concrets." + ((" " + phrase(0)) if pos else ""))
         par.append("Je vous propose un court point cette semaine pour voir ce que l’on peut accélérer.")
     elif key in ("flag", "maj60", "sat"):
         par.append("Cela fait un moment que nous n’avons pas fait le point ensemble. J’aimerais vous appeler cette semaine pour voir comment cela se passe de votre côté et ce que l’on peut améliorer.")
@@ -151,7 +165,7 @@ def compose(c, key, pos, kind):
     elif key in ("nrep", "silence"):
         par.append("Je prends de vos nouvelles : comment se passent vos demandes via Google en ce moment ?")
         if pos:
-            par.append(f"{lead}{pos}.")
+            par.append(phrase(0))
         par.append("Si vous avez une nouveauté (photos, offre, horaires), envoyez-la ici et nous la mettons en ligne.")
     elif key in ("ech2", "ech1"):
         par.append(f"Votre période de suivi arrive à son terme dans {'une semaine' if key == 'ech2' else 'un mois'}. Je vous propose un rendez-vous bilan pour regarder vos résultats et décider ensemble de la suite.")
@@ -203,7 +217,7 @@ def build(pack, today, last_full, mode=""):
         return f"{base}/v2/location/{loc}/contacts/detail/{c['cid']}" if c.get("cid") and loc else ""
 
     def box(r, bg, border):
-        msg = compose(r["c"], r["key"], r["pos"], r["kind"])
+        msg = compose(r["c"], r["key"], r["pos"], r["kind"], r["ft"].get("wd"))
         body = "<br><br>".join(esc(p) for p in msg)
         s = f'<div style="font-size:10px;font-weight:700;color:#566070;letter-spacing:.04em;margin-bottom:4px">MESSAGE PRÊT À ENVOYER (WHATSAPP)</div><div style="font-size:13px;line-height:1.5;background:#ffffff;border:1px solid {border};border-radius:8px;padding:10px 12px">{body}</div>'
         s += f'<div style="font-size:10px;color:#8a90a0;margin-top:4px">{"Chiffres : " + esc(r["src"]) if r["src"] else "Pas de chiffres disponibles : message sans chiffres"}</div>'
@@ -248,7 +262,7 @@ def build(pack, today, last_full, mode=""):
             t += [titre, "-" * len(titre)]
             for r in lst:
                 t.append(f"* {r['c'].get('nom')} : " + " ; ".join(reason_text(k, r['ft']) for k in sorted(r['sigs'], key=lambda k: PRIO.index(k) if k in PRIO else 99)[:3]))
-                t += ["  " + ligne for p in compose(r["c"], r["key"], r["pos"], r["kind"]) for ligne in (p, "")]
+                t += ["  " + ligne for p in compose(r["c"], r["key"], r["pos"], r["kind"], r["ft"].get("wd")) for ligne in (p, "")]
     return subject, "".join(h), "\n".join(t), {"rouges": len(reds), "jaunes": len(yell), "contactes": contacted, "verts": greens}
 
 
