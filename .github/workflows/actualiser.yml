@@ -36,9 +36,20 @@ jobs:
           EM_PASSPHRASE: ${{ secrets.EM_PASSPHRASE }}
           GHL_TOKEN: ${{ secrets.GHL_TOKEN }}
           GHL_LOCATION_ID: ${{ secrets.GHL_LOCATION_ID }}
+          EM_USERS: ${{ secrets.EM_USERS }}
           PREV_URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/data.txt
           FORCE_FULL: ${{ github.event.inputs.complet }}
         run: python refresh.py
+      - name: Sauvegarder l'historique des feux (fichier chiffré)
+        run: |
+          if [ -f history/feux.enc ]; then
+            git config user.name "actualisation-auto"
+            git config user.email "actions@users.noreply.github.com"
+            git add history/feux.enc
+            git commit -m "Historique des feux $(date -u +%F)" || true
+            git pull --rebase || true
+            git push || true
+          fi
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
