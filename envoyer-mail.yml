@@ -1,0 +1,36 @@
+name: Envoyer le mail du matin (test à la demande)
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "test (mail marqué TEST) ou reel"
+        required: true
+        default: "test"
+
+permissions:
+  contents: read
+
+jobs:
+  mail:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - name: Construire et envoyer le mail depuis les données déjà publiées (aucun appel à Local Nord)
+        env:
+          EM_PASSPHRASE: ${{ secrets.EM_PASSPHRASE }}
+          DATA_URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/data.txt
+          MAIL_MODE: ${{ github.event.inputs.mode }}
+          MAIL_TO: ${{ secrets.MAIL_TO }}
+          MAIL_CC: ${{ secrets.MAIL_CC }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          DASHBOARD_URL: ${{ secrets.DASHBOARD_URL }}
+          GHL_APP_URL: ${{ secrets.GHL_APP_URL }}
+          GHL_LOCATION_ID: ${{ secrets.GHL_LOCATION_ID }}
+        run: python send_mail.py
