@@ -451,7 +451,7 @@ def clients_from_ghl(opps, stages, field_ids, fiches, now):
     def parse(s):
         return dt.datetime.fromisoformat(s.replace("Z", "+00:00")) if s else None
 
-    out, stale = [], []
+    out = []
     for o in opps:
         etape = stages.get(o.get("pipelineStageId"), "")
         if etape == "Churn" or o.get("status") == "lost":
@@ -507,10 +507,8 @@ def clients_from_ghl(opps, stages, field_ids, fiches, now):
         if re.search(r"(^|[\s,_-])churn([\s,_-]|$)", tg, re.I) or re.search(r"test tracking|[àa] supprimer", str(o.get("name") or ""), re.I):
             continue                                               # étiqueté churn, ou fiche de test
         etape_j, maj_j = (_days(stg, now) if stg else None), (_days(upd, now) if upd else None)
-        if (etape_j is not None and etape_j >= STALE_STAGE_DAYS and maj_j is not None and maj_j >= STALE_UPDATE_DAYS
-                and not SETUP_RE.search(etape) and not (wa_c and wa_d is not None and wa_d <= 30) and not (dm_j is not None and dm_j < 30)):
-            stale.append({"id": o["id"], "nom": str(o.get("name") or ""), "etape": etape, "j": etape_j, "m": maj_j})
-            continue                                               # dossier inactif : à nettoyer dans GoHighLevel, pas à contacter
+        is_stale = bool(etape_j is not None and etape_j >= STALE_STAGE_DAYS and maj_j is not None and maj_j >= STALE_UPDATE_DAYS
+                        and not SETUP_RE.search(etape) and not (wa_c and wa_d is not None and wa_d <= 30) and not (dm_j is not None and dm_j < 30))
         lnid = str(val("ID Local Nord") or "").strip()
         if lnid not in known:
             lnid = None
@@ -530,20 +528,28 @@ def clients_from_ghl(opps, stages, field_ids, fiches, now):
             "resp": str(o.get("assignedTo") or ""),
             "val": o.get("monetaryValue") or None,
             "wa_c": wa_c, "wa_d": wa_d, "wa_t": wa_t,
-            "cid": o.get("contactId") or None, "pf": pf_list, "pfp": pf_per,
+            "cid": o.get("contactId") or None, "pf": pf_list, "pfp": pf_per, "_stale": is_stale,
         })
-    # --- un même client ne doit apparaître qu'une fois : on garde la fiche la plus récemment mise à jour
+    # --- un même client ne doit apparaître qu'une fois : on garde son dossier le mieux suivi (pas dormant, puis le plus récemment mis à jour)
     best = {}
     big = 10 ** 6
+    keyof = lambda r: r.get("cid") or re.sub(r"\s+", " ", r["nom"].strip().lower())
+    rank = lambda r: (1 if r.get("_stale") else 0, r.get("maj_j") if r.get("maj_j") is not None else big)
     for r in out:
-        key = r.get("cid") or re.sub(r"\s+", " ", r["nom"].strip().lower())
-        cur = best.get(key)
-        if cur is None or (r.get("maj_j") if r.get("maj_j") is not None else big) < (cur.get("maj_j") if cur.get("maj_j") is not None else big):
-            best[key] = r
+        cur = best.get(keyof(r))
+        if cur is None or rank(r) < rank(cur):
+            best[keyof(r)] = r
     keep = {id(r) for r in best.values()}
-    clients_from_ghl.dups = len(out) - len(keep)
-    clients_from_ghl.stale = stale
-    return [r for r in out if id(r) in keep]
+    clients_from_ghl.dupes = [{"id": r["id"], "nom": r["nom"], "etape": r["etape"], "m": r.get("maj_j"), "garde": best[keyof(r)]["id"], "garde_nom": best[keyof(r)]["nom"], "cid": r.get("cid")}
+                              for r in out if id(r) not in keep]
+    clients_from_ghl.dups = len(clients_from_ghl.dupes)
+    winners = [r for r in out if id(r) in keep]
+    # --- dossiers vraiment dormants (le seul dossier du contact) : à nettoyer dans GoHighLevel, pas à contacter
+    clients_from_ghl.stale = [{"id": r["id"], "nom": r["nom"], "etape": r["etape"], "j": r.get("etape_j"), "m": r.get("maj_j"), "cid": r.get("cid")} for r in winners if r.get("_stale")]
+    rows = [r for r in winners if not r.get("_stale")]
+    for r in rows:
+        r.pop("_stale", None)
+    return rows
 
 
 NOTE_AUTO = re.compile(r"\s*(r[ée]cap|rapport|bilan|analyse|\[auto)", re.I)       # notes écrites par les routines : elles ne comptent pas comme un contact
@@ -618,6 +624,7 @@ def fetch_clients(token, location, fiches, now):
             if d:
                 fetch_clients.churned[o["id"]] = d
     fetch_clients.stale = getattr(clients_from_ghl, "stale", [])
+    fetch_clients.dupes = getattr(clients_from_ghl, "dupes", [])
     print(f"GoHighLevel : {len(opps)} opportunités lues, {len(rows)} clients actifs ({getattr(clients_from_ghl, 'dups', 0)} doublon(s) retiré(s), {len(fetch_clients.stale)} dossier(s) inactif(s) écarté(s)), {g.calls} appels", flush=True)
     return rows
 
@@ -725,6 +732,7 @@ def write_user_files(pack, raw_users, out_dir):
         if role != "admin":
             sub.pop("calib", None)
             sub.pop("stale", None)
+            sub.pop("dupes", None)
         open(os.path.join(d, user_key(uid) + ".txt"), "w", encoding="ascii").write(encrypt_pack(sub, pw))
         counts[uid] = (role, len(sub["clients"]))
     open(os.path.join(d, "enabled.txt"), "w", encoding="ascii").write("1")
@@ -939,6 +947,8 @@ def main():
         print("GHL_TOKEN ou GHL_LOCATION_ID absent : l'onglet « À traiter » restera vide.", flush=True)
         pack["clients"] = getattr(load_previous, "clients", [])
     pack["stale"] = getattr(fetch_clients, "stale", []) if fresh_clients else []
+    pack["dupes"] = getattr(fetch_clients, "dupes", []) if fresh_clients else []
+    pack["ghl"] = {"app": (os.environ.get("GHL_APP_URL") or "https://app.gohighlevel.com").rstrip("/"), "loc": loc} if loc else None
     try:
         fts = client_features(pack, [c for c in pack["clients"] if not SETUP_RE.search(c.get("etape") or "")], today, last_full)
         nb = {"rouge": 0, "jaune": 0, "vert": 0, "contactes": 0, "jaune_sans_reponse": 0}
