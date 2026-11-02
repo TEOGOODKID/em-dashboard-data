@@ -30,6 +30,10 @@ IMPORT_DAY = dt.date(2026, 4, 16)       # date d'ajout en bloc (import initial d
 
 
 # =========================================================================== API
+QUOTA_GUARD = os.environ.get("QUOTA_GUARD") != "0"      # arrêt anticipé s'il reste moins de 200 appels dans la journée (QUOTA_GUARD=0 pour le désactiver)
+MAX_CALLS = int(os.environ.get("MAX_CALLS") or "9000")      # plafond de sécurité par passage (un passage léger en utilise environ 1 700)
+
+
 class Api:
     def __init__(self, key):
         import requests
@@ -52,9 +56,15 @@ class Api:
                 r = self.s.get(API + path, params=params, timeout=90); self.calls += 1
                 rem = r.headers.get("x-ratelimit-remaining")
                 if rem is not None:
-                    self.remaining = int(rem)
-                    if self.remaining < 200:
+                    try:
+                        self.remaining = int(rem)
+                    except ValueError:
+                        pass
+                    # Garde-fou : on s'arrête avant d'épuiser le quota quotidien partagé avec vos autres outils.
+                    if QUOTA_GUARD and self.remaining is not None and self.remaining < 200:
                         raise SystemExit("Quota journalier de l'API presque épuisé : arrêt pour ne pas bloquer vos autres outils.")
+                if self.calls > MAX_CALLS:
+                    raise SystemExit(f"Plus de {MAX_CALLS} appels dans ce passage : arrêt de sécurité.")
                 if r.status_code == 401:
                     raise SystemExit("Clé API refusée (401) : vérifiez le secret LN_KEY.")
                 if r.status_code == 429:
@@ -299,7 +309,7 @@ class Ghl:
         self.s.headers.update({"Authorization": "Bearer " + token, "Version": "2021-07-28", "Accept": "application/json"})
         self.lock = threading.Lock(); self.next = 0.0; self.requests = requests; self.calls = 0
 
-    def get(self, path, params=None, tries=5):
+    def get(self, path, params=None, tries=5, soft=False):
         last = None
         for i in range(tries):
             with self.lock:
@@ -308,6 +318,8 @@ class Ghl:
                 time.sleep(slot - now)
             try:
                 r = self.s.get(GHL_API + path, params=params, timeout=90); self.calls += 1
+                if soft and r.status_code in (401, 403, 404):
+                    return None
                 if r.status_code in (401, 403):
                     raise SystemExit(f"GoHighLevel a refusé l'accès ({r.status_code}) : vérifiez GHL_TOKEN et ses permissions de lecture (opportunités, contacts, champs personnalisés).")
                 if r.status_code == 429 or r.status_code >= 500:
@@ -331,6 +343,31 @@ def _toks(s):
 
 def _days(a, b):
     return int((b - a).total_seconds() // 86400)
+
+
+def points_forts(recap):
+    """Extrait « Ce qui va bien » du dernier bilan écrit dans la fiche : 2 lignes chiffrées au maximum, et la période."""
+    if not recap:
+        return [], None
+    txt = str(recap)
+    per = re.search(r"P[ÉE]RIODE\s*:\s*([^\n]{4,60})", txt)
+    m = re.search(r"CE QUI VA BIEN[^\n]*\n(.*?)(?:\n\s*POINT[S]? DE VIGILANCE|\n\s*COMMENT LE PR[ÉE]SENTER|$)", txt, re.S | re.I)
+    out = []
+    if m:
+        for line in m.group(1).split("\n"):
+            line = line.strip()
+            if not line.startswith("-"):
+                continue
+            line = re.sub(r"\s*\(!+\)", "", line.lstrip("- ").strip())
+            line = re.split(r"\s+[-–—]\s+", line)[0].strip()
+            if not re.search(r"\d", line) or re.search(r"n[ée]gatif|baisse|recul|invisible", line, re.I):
+                continue
+            if len(line) > 150:
+                line = line[:150].rsplit(" ", 1)[0] + "…"
+            out.append(line)
+            if len(out) == 2:
+                break
+    return out, (per.group(1).strip() if per else None)
 
 
 WA_CODES = ("RESIL", "REMB", "DECU")      # demande d'arrêt, remboursement / prélèvement contesté, déception
@@ -432,6 +469,7 @@ def clients_from_ghl(opps, stages, field_ids, fiches, now):
         dm = date_of("WA - Dernier message client") or date_of("Date du dernier message")
         ct = date_of("WA - Dernier message équipe") or date_of("Dernier contact équipe")      # alimentés chaque matin par la routine WhatsApp
         wa_c, wa_d, wa_t = parse_wa(val("WA - Alerte"), exp)
+        pf_list, pf_per = points_forts(val("Récap écrit GMB - (W/PDF)"))
         lnid = str(val("ID Local Nord") or "").strip()
         if lnid not in known:
             lnid = None
@@ -451,8 +489,50 @@ def clients_from_ghl(opps, stages, field_ids, fiches, now):
             "resp": str(o.get("assignedTo") or ""),
             "val": o.get("monetaryValue") or None,
             "wa_c": wa_c, "wa_d": wa_d, "wa_t": wa_t,
+            "cid": o.get("contactId") or None, "pf": pf_list, "pfp": pf_per,
         })
     return out
+
+
+NOTE_AUTO = re.compile(r"\s*(r[ée]cap|rapport|bilan|analyse|\[auto)", re.I)       # notes écrites par les routines : elles ne comptent pas comme un contact
+
+
+def fetch_note_days(g, rows, now):
+    """Pour chaque client actif : jours depuis la dernière note HUMAINE de sa fiche contact (champ nt_j), fusionnés dans ct_j.
+    Renvoie le nombre de clients lus, ou 0 si l'accès aux notes est refusé (le reste du passage continue)."""
+    todo = [r for r in rows if r.get("cid") and not SETUP_RE.search(r.get("etape") or "")]
+    if not todo:
+        return 0
+    first = g.get(f"/contacts/{todo[0]['cid']}/notes", soft=True)
+    if first is None:
+        print("Notes GoHighLevel : accès refusé ou introuvable, détection par les notes ignorée.", flush=True)
+        return 0
+
+    def one(r):
+        data = first if r is todo[0] else g.get(f"/contacts/{r['cid']}/notes", soft=True)
+        best = None
+        for n in (data or {}).get("notes") or []:
+            body = str(n.get("body") or "").strip()
+            if len(body) < 3 or NOTE_AUTO.match(body):
+                continue
+            ts = n.get("dateAdded") or n.get("createdAt")
+            try:
+                d = dt.datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+            except ValueError:
+                continue
+            best = d if best is None or d > best else best
+        return r, best
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        futs = [ex.submit(one, r) for r in todo]
+        for f in as_completed(futs):
+            try:
+                r, best = f.result()
+            except Exception:
+                continue
+            if best is not None:
+                r["nt_j"] = max(0, _days(best, now))
+                r["ct_j"] = r["nt_j"] if r.get("ct_j") is None else min(r["ct_j"], r["nt_j"])
+    return len(todo)
 
 
 def fetch_clients(token, location, fiches, now):
@@ -474,6 +554,11 @@ def fetch_clients(token, location, fiches, now):
             break
         params = {**params, "startAfter": meta["startAfter"], "startAfterId": meta["startAfterId"]}
     rows = clients_from_ghl(opps, stages, field_ids, fiches, now)
+    try:
+        nn = fetch_note_days(g, rows, now)
+        print(f"Notes GoHighLevel : {nn} clients lus, {sum(1 for r in rows if r.get('nt_j') is not None)} avec une note humaine.", flush=True)
+    except Exception as e:
+        print("Notes GoHighLevel ignorées :", str(e)[:120], flush=True)
     fetch_clients.churned = {}
     for o in opps:
         if stages.get(o.get("pipelineStageId"), "") == "Churn" or o.get("status") == "lost":
@@ -532,7 +617,7 @@ def load_previous(pw, today):
 
 # =========================================================================== comptes et rôles
 SETUP_RE = re.compile(r"SET UP GMB|Set up GMB|Appel Onboarding|Relance after|CLOSING", re.I)
-SENSITIVE = ("sat", "no_rep", "ct_j", "dm_j", "maj_j", "wa_c", "wa_d", "wa_t")           # infos de churn : réservées à l'admin et au CSM
+SENSITIVE = ("sat", "no_rep", "ct_j", "dm_j", "maj_j", "nt_j", "wa_c", "wa_d", "wa_t", "pf", "pfp")           # infos de churn : réservées à l'admin et au CSM
 ROLES = {
     "admin": {"tabs": ["today", "clients", "setup", "renew", "overview", "sectors", "compare", "week", "rank", "reports", "table", "accounts"],
               "reports": ["client", "week", "dir"], "first": "today"},
