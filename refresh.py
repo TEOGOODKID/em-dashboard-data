@@ -48,7 +48,7 @@ class Api:
             time.sleep(slot - now)
 
     def get(self, path, params=None, tries=6, soft=False):
-        """GET JSON. soft=True : renvoie None (au lieu d'une erreur) pour 403/404."""
+        """GET JSON. soft=True : renvoie None (au lieu d'une erreur) pour 403/404, et si le serveur reste en panne après toutes les tentatives."""
         last = None
         for i in range(tries):
             self._throttle()
@@ -77,6 +77,9 @@ class Api:
                 return r.json()
             except self.requests.RequestException as e:
                 last = str(e)[:120]; time.sleep(2 ** i + random.random())
+        if soft:                                   # donnée secondaire (photos, score, réseaux) : on continue sans elle
+            print(f"  ATTENTION : {path} injoignable ({last}), ignoré", flush=True)
+            return None
         raise RuntimeError(f"Échec de {path} : {last}")
 
 
@@ -163,10 +166,29 @@ def fetch_all(api, today, limit=None, review_days=170, prev=None):
     raw, t0, done = {}, time.time(), 0
     with ThreadPoolExecutor(WORKERS) as ex:
         futs = {ex.submit(fetch_one, api, x, today, (prev or {}).get(x["id"])): x["id"] for x in listings}
+        failed = []
         for f in as_completed(futs):
-            raw[futs[f]] = f.result(); done += 1
+            try:
+                raw[futs[f]] = f.result()
+            except RuntimeError as e:                      # panne passagère de Local Nord sur une fiche : on réessaie plus bas
+                failed.append((futs[f], str(e)[:110]))
+            done += 1
             if done % 50 == 0:
                 print(f"  {done}/{len(listings)} fiches | {api.calls} appels | quota restant {api.remaining} | {time.time() - t0:.0f}s", flush=True)
+    for lid, err in list(failed):                          # seconde chance, une fiche à la fois, après une pause
+        time.sleep(5)
+        x = next(l for l in listings if l["id"] == lid)
+        try:
+            raw[lid] = fetch_one(api, x, today, (prev or {}).get(lid))
+            failed.remove((lid, err))
+        except RuntimeError:
+            pass
+    if failed:
+        if len(failed) > max(3, len(listings) // 30):
+            raise RuntimeError(f"{len(failed)} fiches illisibles : panne de Local Nord ? Dernière erreur : {failed[-1][1]}")
+        print(f"ATTENTION : {len(failed)} fiche(s) ignorée(s) ce matin (Local Nord ne répond pas), reprises demain : " + ", ".join(l for l, _ in failed), flush=True)
+        skip = {l for l, _ in failed}
+        listings = [l for l in listings if l["id"] not in skip]
     reviews = fetch_reviews(api, today, review_days)
     print(f"  avis récupérés : {len(reviews)} | total appels : {api.calls} | quota restant : {api.remaining}", flush=True)
     return listings, raw, reviews
