@@ -4,9 +4,13 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "test (mail marqué TEST) ou reel"
+        description: "Choisir test (mail marqué TEST) ou reel (vrai mail, sans bandeau)"
         required: true
-        default: "test"
+        type: choice
+        options:
+          - test
+          - reel
+        default: test
 
 permissions:
   contents: read
@@ -33,4 +37,6 @@ jobs:
           DASHBOARD_URL: ${{ secrets.DASHBOARD_URL }}
           GHL_APP_URL: ${{ secrets.GHL_APP_URL }}
           GHL_LOCATION_ID: ${{ secrets.GHL_LOCATION_ID }}
+          TRAITE_URL: ${{ secrets.TRAITE_URL }}
+          TRAITE_TOKEN: ${{ secrets.TRAITE_TOKEN }}
         run: python send_mail.py
