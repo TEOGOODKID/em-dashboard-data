@@ -24,8 +24,8 @@ from email.utils import formataddr
 import refresh
 
 SIG = "L’équipe Elite Média"
-PRIO = ["wa_resil", "wa_remb", "wa_decu", "flag", "nrep", "silence", "ech2", "ech1", "rdv", "chute", "vues", "avis", "maj60", "sat", "win"]
-WKEY = {"wa_resil": "war", "wa_remb": "wam", "wa_decu": "wad", "silence": "sil"}
+PRIO = ["wa_resil", "wa_atte", "wa_paie", "wa_remb", "wa_decu", "flag", "nrep", "silence", "ech2", "ech1", "rdv", "chute", "vues", "avis", "maj60", "sat", "win"]
+WKEY = {"wa_resil": "war", "wa_remb": "wam", "wa_decu": "wad", "wa_atte": "att", "wa_paie": "pai", "silence": "sil"}
 FR = ["lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche"]
 MOIS = ["janvier", "février", "mars", "avril", "mai", "juin", "juillet", "août", "septembre", "octobre", "novembre", "décembre"]
 
@@ -162,6 +162,8 @@ def reason_text(key, ft):
         "wa_resil": f"Demande d’arrêt sur WhatsApp ({ago})",
         "wa_remb": f"Remboursement ou prélèvement contesté sur WhatsApp ({ago})",
         "wa_decu": f"Déception exprimée sur WhatsApp ({ago})",
+        "wa_atte": f"Demande du client en attente de réponse sur WhatsApp ({ago})",
+        "wa_paie": f"Paiement échoué ({ago})",
         "flag": "« Risque de churn » noté",
         "sat": "Satisfaction basse notée",
         "nrep": "Sans réponse (étiquette)",
@@ -197,6 +199,11 @@ def compose(c, key, pos, kind, wd=None):
     elif key == "wa_remb":
         par.append("Je vérifie votre dossier de facturation et je vous appelle aujourd’hui pour en parler avec vous.")
         par.append("Si vous préférez un autre moment, dites-le-moi ici.")
+    elif key == "wa_atte":
+        par.append("Je reviens vers vous au sujet de votre message : je prends votre demande en charge aujourd’hui et je vous réponds au plus vite.")
+    elif key == "wa_paie":
+        par.append("Je vous écris au sujet de votre dernier paiement, qui n’a pas pu être prélevé. Pouvez-vous vérifier votre moyen de paiement ?")
+        par.append("Dites-moi si vous préférez qu’on en parle par téléphone.")
     elif key == "wa_decu":
         par.append("Merci pour votre franchise, vous avez raison d’attendre des résultats concrets." + ((" " + phrase(0)) if pos else ""))
         par.append("Je vous propose un court point cette semaine pour voir ce que l’on peut accélérer.")
