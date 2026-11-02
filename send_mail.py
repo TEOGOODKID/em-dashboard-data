@@ -39,6 +39,7 @@ def nf(n):
 
 
 FN = set("""jean pierre michel philippe alain patrick nicolas christophe laurent eric daniel frederic franck frank sebastien julien david thomas stephane olivier pascal marc vincent bruno guillaume yannick cedric alexandre antoine mathieu maxime romain kevin jeremy anthony benjamin adrien quentin florian hugo lucas louis arnaud fabrice fabien gilles gerard bernard didier thierry christian dominique jacques claude henri paul rene serge joel yves lionel ludovic samuel sam gio ali abdel brice alan jessy loic damien gary cyril remi raphael theo nathan enzo tony steven dylan jordan lilian mickael michael jonathan johan jerome gregory gregoire stephen xavier emmanuel manuel marie nathalie isabelle sylvie catherine christine sandrine valerie stephanie veronique sophie aurelie celine laurence julie emilie camille laura sarah karine carine corinne virginie audrey marion pauline charlotte elodie melanie delphine sabine claire anne fatma nadine tracy jeanne carla jade lea manon chloe ines emma lisa nicole martine monique francoise brigitte patricia sandra severine magali cecile helene florence agnes josiane mohamed mohammed mehdi ahmed ahmad youssef yassine karim samir nabil hakim hicham rachid mustapha mourad omar othmane said tahar kheiredine bilal amine walid sofiane ismael ibrahim abdelkader abdelhak hedi sami slim farid fouad jamel kamel karima samira nadia leila amel yasmine imane sonia fatima aicha khadija carlo carmelo santo giovanni marco luca antonio jose carlos miguel joao pedro nikolas nikos vasilis dimitri ghanem seth yasar gaetan guy herve jean-marc jean-pierre jean-luc jean-michel""".split())
+ACC = {"helene": "Hélène", "melanie": "Mélanie", "amelie": "Amélie", "aurelie": "Aurélie", "cecile": "Cécile", "frederic": "Frédéric", "stephane": "Stéphane", "stephanie": "Stéphanie", "jeremy": "Jérémy", "jerome": "Jérôme", "remi": "Rémi", "rene": "René", "loic": "Loïc", "elodie": "Élodie", "emilie": "Émilie", "ines": "Inès", "chloe": "Chloé", "lea": "Léa", "gaetan": "Gaëtan", "herve": "Hervé", "mickael": "Mickaël", "raphael": "Raphaël", "joel": "Joël", "michael": "Michaël", "theo": "Théo", "sebastien": "Sébastien", "gregoire": "Grégoire", "gerard": "Gérard", "veronique": "Véronique", "valerie": "Valérie", "severine": "Séverine", "francoise": "Françoise", "andre": "André", "jose": "José", "noemie": "Noémie"}
 TITRES = {"mr", "m", "mme", "mlle", "madame", "monsieur", "dr", "me", "maitre"}
 
 
@@ -50,7 +51,9 @@ def first_name(nom):
     norm = lambda t: re.sub(r"[éèêë]", "e", re.sub(r"[àâä]", "a", re.sub(r"[îï]", "i", re.sub(r"[ôö]", "o", re.sub(r"[ûüù]", "u", t.lower())))))
     for t in toks[:2]:
         if norm(t) in FN:
-            return t[:1].upper() + t[1:].lower()
+            if re.search(r"[À-ÿ]", t):
+                return t[:1].upper() + t[1:]
+            return ACC.get(norm(t), t[:1].upper() + t[1:].lower())
     return ""
 
 
