@@ -290,8 +290,24 @@ def send(subject, html_body, text_body):
     print(f"Mail envoyé à {', '.join(to + cc)} : {subject}", flush=True)
 
 
+def jour_autorise():
+    """Le mail planifié ne part que du lundi au samedi (MAIL_DAYS pour changer : 0 = lundi ... 6 = dimanche)."""
+    if os.environ.get("GITHUB_EVENT_NAME") != "schedule":
+        return True                                        # un lancement à la main (test) part toujours
+    ok = {int(x) for x in re.findall(r"\d", os.environ.get("MAIL_DAYS") or "012345")}
+    try:
+        from zoneinfo import ZoneInfo
+        d = dt.datetime.now(ZoneInfo("Europe/Paris")).weekday()
+    except Exception:
+        d = dt.datetime.now(dt.timezone.utc).weekday()
+    return d in ok
+
+
 def main():
     mode = (os.environ.get("MAIL_MODE") or "").strip().lower()
+    if mode in ("test", "reel") and not os.environ.get("DRY_RUN") and not jour_autorise():
+        print("Dimanche : pas de mail (MAIL_DAYS).", flush=True)
+        return
     pack = load_pack()
     today = dt.date.fromisoformat(pack["built"])
     last_full = dt.date.fromisoformat(pack["last_full"])
