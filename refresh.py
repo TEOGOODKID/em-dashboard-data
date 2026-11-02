@@ -370,10 +370,16 @@ def points_forts(recap):
     return out, (per.group(1).strip() if per else None)
 
 
-WA_CODES = ("RESIL", "REMB", "DECU")      # demande d'arrêt, remboursement / prélèvement contesté, déception
+WA_CODES = ("RESIL", "REMB", "DECU", "ATTE", "PAIE")      # arrêt, remboursement / prélèvement contesté, déception, demande en attente de réponse, paiement échoué
+# Tags de la phase commerciale, jamais retirés après la signature : ils ne disent rien du client en gestion.
+_COMMERCIAL_TAG = re.compile(r"^\s*(no rep du jour|\d+\s*jours?\s*sans rep|r\d+\s*sans rep)\s*$", re.I)
+STALE_STAGE_DAYS = int(os.environ.get("STALE_STAGE_DAYS") or "150")     # dossier inactif : étape inchangée depuis au moins N jours
+STALE_UPDATE_DAYS = int(os.environ.get("STALE_UPDATE_DAYS") or "120")   # ... et aucune mise à jour du dossier depuis au moins N jours
 _WA_SYN = [(re.compile(r"resil|résil|arr[êe]t|stop|annul|fin de contrat", re.I), "RESIL"),
            (re.compile(r"rembours|pr[ée]l[èe]vement|avoir|litige|opposition", re.I), "REMB"),
-           (re.compile(r"d[ée][cç]u|d[ée]ception|m[ée]content|insatisf|friche", re.I), "DECU")]
+           (re.compile(r"d[ée][cç]u|d[ée]ception|m[ée]content|insatisf|friche", re.I), "DECU"),
+           (re.compile(r"attente|attend|sans r[ée]ponse", re.I), "ATTE"),
+           (re.compile(r"paiement|impay|[ée]chou|rejet", re.I), "PAIE")]
 
 
 def parse_wa(raw, exp):
@@ -383,7 +389,7 @@ def parse_wa(raw, exp):
         return None, None, None
     raw = str(raw).strip()
     code = None
-    m = re.match(r"\s*(RESIL|REMB|DECU)\b", raw, re.I)
+    m = re.match(r"\s*(RESIL|REMB|DECU|ATTE|PAIE)\b", raw, re.I)
     if m:
         code = m.group(1).upper()
     else:
@@ -423,7 +429,7 @@ def clients_from_ghl(opps, stages, field_ids, fiches, now):
     def parse(s):
         return dt.datetime.fromisoformat(s.replace("Z", "+00:00")) if s else None
 
-    out = []
+    out, stale = [], []
     for o in opps:
         etape = stages.get(o.get("pipelineStageId"), "")
         if etape == "Churn" or o.get("status") == "lost":
@@ -470,6 +476,19 @@ def clients_from_ghl(opps, stages, field_ids, fiches, now):
         ct = date_of("WA - Dernier message équipe") or date_of("Dernier contact équipe")      # alimentés chaque matin par la routine WhatsApp
         wa_c, wa_d, wa_t = parse_wa(val("WA - Alerte"), exp)
         pf_list, pf_per = points_forts(val("Récap écrit GMB - (W/PDF)"))
+        # --- corrections « sans réponse », exclusions
+        real_tags = [t for t in tags if not _COMMERCIAL_TAG.match(str(t))]
+        no_rep = bool(re.search(r"sans rep|no rep", ",".join(real_tags), re.I))
+        dm_j = _days(dm, now) if dm else None
+        if no_rep and dm_j is not None and dm_j < 14:
+            no_rep = False                                         # le client a écrit récemment : il n'est pas « sans réponse »
+        if re.search(r"(^|[\s,_-])churn([\s,_-]|$)", tg, re.I) or re.search(r"test tracking|[àa] supprimer", str(o.get("name") or ""), re.I):
+            continue                                               # étiqueté churn, ou fiche de test
+        etape_j, maj_j = (_days(stg, now) if stg else None), (_days(upd, now) if upd else None)
+        if (etape_j is not None and etape_j >= STALE_STAGE_DAYS and maj_j is not None and maj_j >= STALE_UPDATE_DAYS
+                and not SETUP_RE.search(etape) and not (wa_c and wa_d is not None and wa_d <= 30) and not (dm_j is not None and dm_j < 30)):
+            stale.append({"id": o["id"], "nom": str(o.get("name") or ""), "etape": etape, "j": etape_j, "m": maj_j})
+            continue                                               # dossier inactif : à nettoyer dans GoHighLevel, pas à contacter
         lnid = str(val("ID Local Nord") or "").strip()
         if lnid not in known:
             lnid = None
@@ -483,15 +502,26 @@ def clients_from_ghl(opps, stages, field_ids, fiches, now):
             "rrm": rrm, "sat": sat, "gmb": val("Situation GMB") or "", "acces": val("Accès GMB") or "",
             "maj_j": _days(upd, now) if upd else None, "etape_j": _days(stg, now) if stg else None,
             "offre": "198€" if "198€" in tg else ("98€" if "98€" in tg else ""),
-            "no_rep": bool(re.search(r"sans rep|no rep", tg)), "lnid": lnid, "exp": now.date().isoformat(),
-            "dm_j": _days(dm, now) if dm else None,
+            "no_rep": no_rep, "lnid": lnid, "exp": now.date().isoformat(),
+            "dm_j": dm_j,
             "ct_j": _days(ct, now) if ct else None,
             "resp": str(o.get("assignedTo") or ""),
             "val": o.get("monetaryValue") or None,
             "wa_c": wa_c, "wa_d": wa_d, "wa_t": wa_t,
             "cid": o.get("contactId") or None, "pf": pf_list, "pfp": pf_per,
         })
-    return out
+    # --- un même client ne doit apparaître qu'une fois : on garde la fiche la plus récemment mise à jour
+    best = {}
+    big = 10 ** 6
+    for r in out:
+        key = r.get("cid") or re.sub(r"\s+", " ", r["nom"].strip().lower())
+        cur = best.get(key)
+        if cur is None or (r.get("maj_j") if r.get("maj_j") is not None else big) < (cur.get("maj_j") if cur.get("maj_j") is not None else big):
+            best[key] = r
+    keep = {id(r) for r in best.values()}
+    clients_from_ghl.dups = len(out) - len(keep)
+    clients_from_ghl.stale = stale
+    return [r for r in out if id(r) in keep]
 
 
 NOTE_AUTO = re.compile(r"\s*(r[ée]cap|rapport|bilan|analyse|\[auto)", re.I)       # notes écrites par les routines : elles ne comptent pas comme un contact
@@ -565,7 +595,8 @@ def fetch_clients(token, location, fiches, now):
             d = str(o.get("lastStageChangeAt") or o.get("updatedAt") or "")[:10]
             if d:
                 fetch_clients.churned[o["id"]] = d
-    print(f"GoHighLevel : {len(opps)} opportunités lues, {len(rows)} clients actifs, {g.calls} appels", flush=True)
+    fetch_clients.stale = getattr(clients_from_ghl, "stale", [])
+    print(f"GoHighLevel : {len(opps)} opportunités lues, {len(rows)} clients actifs ({getattr(clients_from_ghl, 'dups', 0)} doublon(s) retiré(s), {len(fetch_clients.stale)} dossier(s) inactif(s) écarté(s)), {g.calls} appels", flush=True)
     return rows
 
 
@@ -671,6 +702,7 @@ def write_user_files(pack, raw_users, out_dir):
         sub = {**pack, "clients": clients_for(u, role, pack.get("clients") or []), "profile": profile}
         if role != "admin":
             sub.pop("calib", None)
+            sub.pop("stale", None)
         open(os.path.join(d, user_key(uid) + ".txt"), "w", encoding="ascii").write(encrypt_pack(sub, pw))
         counts[uid] = (role, len(sub["clients"]))
     open(os.path.join(d, "enabled.txt"), "w", encoding="ascii").write("1")
@@ -682,7 +714,7 @@ def write_user_files(pack, raw_users, out_dir):
 # d'autres réglages et mesurer, après quelques semaines, quels signaux annoncent vraiment un départ.
 # Le fichier est chiffré (mot de passe du dashboard) et versionné dans le dépôt : history/feux.enc
 HIST_PATH = os.environ.get("HIST_PATH", "history/feux.enc")
-DEF_W = {"war": 4, "wam": 3, "wad": 2, "sil": 1, "flag": 4, "sat": 2, "win": 1, "nrep": 2, "ech1": 2, "ech2": 3, "rdv": 1, "maj60": 1, "vues": 2, "avis": 2, "chute": 2, "thr_j": 2, "thr_r": 4}
+DEF_W = {"war": 4, "wam": 3, "wad": 2, "att": 3, "pai": 3, "sil": 1, "flag": 4, "sat": 2, "win": 1, "nrep": 2, "ech1": 2, "ech2": 3, "rdv": 1, "maj60": 1, "vues": 2, "avis": 2, "chute": 2, "thr_j": 2, "thr_r": 4}
 SIGNALS = [("flag", "« Risque de churn » noté"), ("sat", "Satisfaction basse (30 ou 50 %)"), ("win", "Mensuel, mois 2 à 4"), ("nrep", "Sans réponse (étiquette)"),
            ("ech1", "Échéance dans 1 mois"), ("ech2", "Échéance dans 7 jours"), ("rdv", "RDV bilan à planifier"), ("maj60", "Aucune mise à jour depuis 60 jours"),
            ("vues", "Vues en baisse de 20 % et plus (3 mois)"), ("avis", "Avis 1-2 étoiles récent"), ("chute", "Vues en chute sur 30 jours"),
@@ -786,6 +818,10 @@ def feu_of(ft, W=DEF_W):
             add("wa_remb", W["wam"])
         elif wa == "DECU":
             add("wa_decu", W["wad"])
+        elif wa == "ATTE":
+            add("wa_atte", W.get("att", 3))
+        elif wa == "PAIE":
+            add("wa_paie", W.get("pai", 3))
     if ft.get("dm") is not None and ft["dm"] >= 30:
         add("silence", W["sil"])
     return ("rouge" if flag or pts >= W["thr_r"] else ("jaune" if pts >= W["thr_j"] else "vert")), sigs
@@ -880,6 +916,21 @@ def main():
     else:
         print("GHL_TOKEN ou GHL_LOCATION_ID absent : l'onglet « À traiter » restera vide.", flush=True)
         pack["clients"] = getattr(load_previous, "clients", [])
+    pack["stale"] = getattr(fetch_clients, "stale", []) if fresh_clients else []
+    try:
+        fts = client_features(pack, [c for c in pack["clients"] if not SETUP_RE.search(c.get("etape") or "")], today, last_full)
+        nb = {"rouge": 0, "jaune": 0, "vert": 0, "contactes": 0, "jaune_sans_reponse": 0}
+        for ft in fts:
+            col, sg = feu_of(ft)
+            ct_, wd_ = ft.get("ct"), ft.get("wd")
+            if col != "vert" and ct_ is not None and ct_ <= 7 and (wd_ is None or ct_ <= wd_):
+                nb["contactes"] += 1
+            else:
+                nb[col] += 1
+                nb["jaune_sans_reponse"] += 1 if (col == "jaune" and "nrep" in sg) else 0
+        print(f"Feux du jour : {nb['rouge']} à appeler, {nb['jaune']} à écrire (dont {nb['jaune_sans_reponse']} avec « sans réponse »), {nb['contactes']} contactés, {nb['vert']} sans signal.", flush=True)
+    except Exception as e:
+        print("Résumé des feux ignoré :", str(e)[:100], flush=True)
     try:
         h = update_history(pack, getattr(fetch_clients, "churned", None), pw, today, last_full) if fresh_clients else load_history(pw)
         if h is not None:
