@@ -50,6 +50,21 @@ jobs:
             git pull --rebase || true
             git push || true
           fi
+      - name: Envoyer le mail du matin (seulement le lancement planifié, et seulement si MAIL_MODE est réglé)
+        if: github.event_name == 'schedule'
+        continue-on-error: true
+        env:
+          EM_PASSPHRASE: ${{ secrets.EM_PASSPHRASE }}
+          DATA_FILE: site/data.txt
+          MAIL_MODE: ${{ secrets.MAIL_MODE }}
+          MAIL_TO: ${{ secrets.MAIL_TO }}
+          MAIL_CC: ${{ secrets.MAIL_CC }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          DASHBOARD_URL: ${{ secrets.DASHBOARD_URL }}
+          GHL_APP_URL: ${{ secrets.GHL_APP_URL }}
+          GHL_LOCATION_ID: ${{ secrets.GHL_LOCATION_ID }}
+        run: python send_mail.py
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
