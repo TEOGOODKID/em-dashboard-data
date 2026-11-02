@@ -70,6 +70,44 @@ def load_pack():
     return refresh.decrypt_pack(blob, os.environ["EM_PASSPHRASE"])
 
 
+def fetch_marks():
+    """Marques « Traité » posées dans le dashboard (service sur le VPS). Si le service ne répond pas, aucune marque : le mail part quand même."""
+    url, tok = (os.environ.get("TRAITE_URL") or "").rstrip("/"), os.environ.get("TRAITE_TOKEN") or ""
+    if not url or not tok:
+        return {}
+    try:
+        import requests
+        r = requests.get(url + "/marks", headers={"Authorization": "Bearer " + tok}, timeout=8)
+        r.raise_for_status()
+        return {str(m["client_id"]): m for m in (r.json().get("marks") or [])}
+    except Exception as e:                                                      # noqa: BLE001
+        print("Marques « Traité » indisponibles :", str(e)[:100], flush=True)
+        return {}
+
+
+def treated_by(c, ft, marks, built):
+    """Marque « Traité » encore valable : posée il y a 7 jours ou moins, et sans nouvelle alerte WhatsApp depuis."""
+    m = marks.get(str(c.get("id")))
+    if not m:
+        return None
+    try:
+        at = dt.datetime.fromisoformat(str(m["at"]).replace("Z", "+00:00"))
+    except (KeyError, ValueError):
+        return None
+    if (dt.datetime.now(dt.timezone.utc) - at).total_seconds() > 7 * 86400:
+        return None
+    wd = ft.get("wd")
+    if c.get("wa_c") and wd is not None:
+        try:
+            from zoneinfo import ZoneInfo
+            mday = at.astimezone(ZoneInfo("Europe/Paris")).date()
+        except Exception:                                                       # noqa: BLE001
+            mday = at.date()
+        if built - dt.timedelta(days=wd) > mday:
+            return None
+    return m
+
+
 def fiche_metrics(f):
     """Vues, appels sur les 3 derniers mois comparés aux 3 précédents, note et avis."""
     n = min(5, int(f.get("mois_dispo") or 0))
@@ -192,6 +230,7 @@ def build(pack, today, last_full, mode=""):
     clients = [c for c in (pack.get("clients") or []) if not refresh.SETUP_RE.search(c.get("etape") or "")]
     feats = refresh.client_features(pack, clients, today, last_full)
     fiches = {f["id"]: f for f in pack["fiches"]}
+    marks = fetch_marks()
     rows, contacted, greens = [], 0, 0
     for c, ft in zip(clients, feats):
         color, sigs = refresh.feu_of(ft)
@@ -199,7 +238,7 @@ def build(pack, today, last_full, mode=""):
             greens += 1
             continue
         ct, wd = c.get("ct_j"), ft.get("wd")
-        if ct is not None and ct <= 7 and (wd is None or ct <= wd):
+        if (ct is not None and ct <= 7 and (wd is None or ct <= wd)) or treated_by(c, ft, marks, today):
             contacted += 1
             continue
         key = next((k for k in PRIO if k in sigs), sigs[0] if sigs else "win")
