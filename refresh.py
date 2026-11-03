@@ -395,6 +395,7 @@ def points_forts(recap):
 WA_CODES = ("RESIL", "REMB", "DECU", "ATTE", "PAIE")      # arrêt, remboursement / prélèvement contesté, déception, demande en attente de réponse, paiement échoué
 # Tags de la phase commerciale, jamais retirés après la signature : ils ne disent rien du client en gestion.
 _COMMERCIAL_TAG = re.compile(r"^\s*(no rep du jour|\d+\s*jours?\s*sans rep|r\d+\s*sans rep)\s*$", re.I)
+WA_SHORT_DAYS = int(os.environ.get("WA_SHORT_DAYS") or "14")             # « demande en attente » et « paiement échoué » : valables 14 jours (les autres alertes : 30)
 STALE_STAGE_DAYS = int(os.environ.get("STALE_STAGE_DAYS") or "150")     # dossier inactif : étape inchangée depuis au moins N jours
 STALE_UPDATE_DAYS = int(os.environ.get("STALE_UPDATE_DAYS") or "120")   # ... et aucune mise à jour du dossier depuis au moins N jours
 _WA_SYN = [(re.compile(r"resil|résil|arr[êe]t|stop|annul|fin de contrat", re.I), "RESIL"),
@@ -848,9 +849,9 @@ def feu_of(ft, W=DEF_W):
             add("wa_remb", W["wam"])
         elif wa == "DECU":
             add("wa_decu", W["wad"])
-        elif wa == "ATTE":
+        elif wa == "ATTE" and wd <= WA_SHORT_DAYS:
             add("wa_atte", W.get("att", 3))
-        elif wa == "PAIE":
+        elif wa == "PAIE" and wd <= WA_SHORT_DAYS:
             add("wa_paie", W.get("pai", 3))
     if ft.get("dm") is not None and ft["dm"] >= 30:
         add("silence", W["sil"])
@@ -879,6 +880,106 @@ def update_history(pack, churned, pw, today, last_full):
         os.makedirs(d, exist_ok=True)
     open(HIST_PATH, "w", encoding="ascii").write(encrypt_pack(h, pw))
     return h
+
+
+# --------------------------------------------------------------------------- faits pour les messages personnalisés
+def _nf(n):
+    return f"{int(n):,}".replace(",", " ")
+
+
+def _fiche_metrics(f):
+    """Vues, appels sur les 3 derniers mois comparés aux 3 précédents, note et avis."""
+    n = min(5, int(f.get("mois_dispo") or 0))
+    if n < 3:
+        return None
+
+    def tot(k, t0, t1):
+        s_ = 0
+        for t in range(t0, t1 + 1):
+            v = f.get(f"{k}_m{t}") if t >= 1 else f.get(f"{k}_p{1 - t}")
+            if v is None:
+                return None
+            s_ += v
+        return s_
+    out = {"note": f.get("note"), "avis": f.get("avis")}
+    for k in ("v", "a"):
+        out[k] = (tot(k, n - 2, n), tot(k, n - 5, n - 3))
+    return out
+
+
+def _positives(c, fiches):
+    """Phrase positive vraie : (texte, type) ; type = « stats », « note » ou « bilan »."""
+    f = fiches.get(c.get("lnid")) if c.get("lnid") else None
+    m = _fiche_metrics(f) if f else None
+    if m:
+        growth, v, a = [], m["v"], m["a"]
+        if v[0] and v[1] and v[1] >= 30 and v[0] / v[1] - 1 >= 0.10:
+            growth.append(f"visibilité en hausse de {round((v[0] / v[1] - 1) * 100)} % ({_nf(v[0])} vues contre {_nf(v[1])})")
+        if a[0] is not None and a[1] is not None and a[0] > a[1] and a[0] >= 5:
+            growth.append(f"{a[0]} appels contre {a[1]}")
+        note = None
+        if m["note"] and m["avis"] and m["note"] >= 4.5 and m["avis"] >= 10:
+            note = ("5 étoiles" if m["note"] >= 4.95 else str(round(m["note"], 1)).replace(".", ",")) + f" sur {m['avis']} avis"
+        if growth:
+            return ", ".join(growth + ([f"une note de {note}"] if note else [])), "stats"
+        if note:
+            return note, "note"
+    if c.get("pf"):
+        bl = []
+        for b in c["pf"][:2]:
+            b = re.split(r"\s+[-–—]\s+", b.strip())[0].rstrip(".")
+            bl.append(b[:1].lower() + b[1:] if b[1:2].islower() else b)
+        return " ; ".join(bl), "bilan"
+    return "", None
+
+
+def compute_facts(pack):
+    """Ajoute à chaque client : « pos » (faits positifs vrais), « pos_k » (leur type) et « kpi » (variation des vues sur 28 jours,
+    comparée à la médiane de son secteur quand au moins 8 fiches comparables existent). Colonnes : v = vues, c = clics site, a = appels."""
+    import statistics
+    F = pack.get("fiches") or []
+    byid = {f.get("id"): f for f in F}
+    idx = {f.get("id"): i for i, f in enumerate(F)}
+    J = pack.get("jours") or {}
+    agg, med = {}, {}
+    if J.get("d"):
+        last = max(J["d"])
+        for n, d, v, a_ in zip(J["n"], J["d"], J["v"], J["a"]):
+            if last - 27 <= d <= last:
+                t = agg.setdefault(n, [0, 0, 0, 0]); t[0] += v; t[2] += a_
+            elif last - 55 <= d < last - 27:
+                t = agg.setdefault(n, [0, 0, 0, 0]); t[1] += v; t[3] += a_
+        sect = {}
+        for i, f in enumerate(F):
+            t = agg.get(i)
+            if t and t[1] >= 100:
+                sect.setdefault(f.get("secteur"), []).append((t[0] - t[1]) / t[1] * 100)
+        med = {k: (statistics.median(v), len(v)) for k, v in sect.items() if k and len(v) >= 8}
+    for c in pack.get("clients") or []:
+        i = idx.get(c.get("lnid"))
+        f = F[i] if i is not None else None
+        t = agg.get(i) if i is not None else None
+        growth = []
+        if t:
+            if t[2] >= 8 and t[3] >= 1 and t[2] >= t[3] * 1.15:
+                growth.append(f"{t[2]} appels ces 4 dernières semaines, contre {t[3]} le mois précédent ({round((t[2] / t[3] - 1) * 100)} % de plus)")
+            if t[1] >= 100 and t[0] >= t[1] * 1.15:
+                growth.append(f"visibilité en hausse de {round((t[0] / t[1] - 1) * 100)} % sur la même période")
+        note = None
+        if f and f.get("note") and f.get("avis") and f["note"] >= 4.5 and f["avis"] >= 10:
+            note = ("5 sur 5" if f["note"] >= 4.95 else str(round(f["note"], 1)).replace(".", ",") + " sur 5") + f" avec {f['avis']} avis"
+        if growth:
+            c["pos"], c["pos_k"] = ", ".join(growth[:2] + ([f"une note de {note}"] if note else [])), "stats"
+        elif note:
+            c["pos"], c["pos_k"] = f"une note de {note}", "note"
+        else:
+            pos, kind = _positives(c, byid)
+            if pos:
+                c["pos"], c["pos_k"] = pos, kind
+        if t and t[1] >= 100:
+            m = med.get(f.get("secteur")) if f else None
+            c["kpi"] = {"chg": round((t[0] - t[1]) / t[1] * 100), "sm": round(m[0]) if m else None, "sn": m[1] if m else 0,
+                        "ap": t[2], "app": t[3]}
 
 
 def calibration(h, today):
@@ -946,6 +1047,10 @@ def main():
     else:
         print("GHL_TOKEN ou GHL_LOCATION_ID absent : l'onglet « À traiter » restera vide.", flush=True)
         pack["clients"] = getattr(load_previous, "clients", [])
+    try:
+        compute_facts(pack)
+    except Exception as e:
+        print("Messages personnalisés : faits ignorés (" + str(e)[:100] + ")", flush=True)
     pack["stale"] = getattr(fetch_clients, "stale", []) if fresh_clients else []
     pack["dupes"] = getattr(fetch_clients, "dupes", []) if fresh_clients else []
     pack["ghl"] = {"app": (os.environ.get("GHL_APP_URL") or "https://app.gohighlevel.com").rstrip("/"), "loc": loc} if loc else None
