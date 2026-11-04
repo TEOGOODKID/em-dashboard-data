@@ -2,11 +2,15 @@ name: Actualiser le dashboard
 
 on:
   schedule:
-    - cron: "30 5 * * *"     # tous les jours à 05h30 UTC (6h30 ou 7h30 en France)
-  workflow_dispatch:          # bouton « Run workflow » pour lancer à la main
+    - cron: "30 5 * * *"     # SECOURS : GitHub démarre ce lancement avec 6 à 8 heures de retard. Le serveur déclenche le vrai lancement à 6h30 (voir document 09).
+  workflow_dispatch:          # bouton « Run workflow », et déclenchement automatique par le serveur
     inputs:
       complet:
         description: "Écrire 1 pour forcer une actualisation complète (sinon : légère sauf le lundi)"
+        required: false
+        default: ""
+      mail:
+        description: "Écrire 1 pour envoyer aussi le mail du matin (le serveur l'écrit tous les jours à 6h30)"
         required: false
         default: ""
 
@@ -21,7 +25,22 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # Le lancement de secours de GitHub ne fait rien si le mail du jour est déjà parti (évite deux mails le même jour).
+  garde:
+    runs-on: ubuntu-latest
+    outputs:
+      deja: ${{ steps.g.outputs.deja }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: g
+        run: |
+          deja=false
+          if [ "${{ github.event_name }}" = "schedule" ] && [ -f history/dernier-envoi.txt ] && [ "$(cat history/dernier-envoi.txt)" = "$(TZ=Europe/Paris date +%F)" ]; then deja=true; fi
+          echo "deja=$deja" >> "$GITHUB_OUTPUT"
+
   build:
+    needs: garde
+    if: needs.garde.outputs.deja != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
@@ -50,8 +69,9 @@ jobs:
             git pull --rebase || true
             git push || true
           fi
-      - name: Envoyer le mail du matin (seulement le lancement planifié, et seulement si MAIL_MODE est réglé)
-        if: github.event_name == 'schedule'
+      - name: Envoyer le mail du matin (lancement du serveur ou de secours, et seulement si MAIL_MODE est réglé)
+        id: mail
+        if: github.event_name == 'schedule' || github.event.inputs.mail == '1'
         continue-on-error: true
         env:
           EM_PASSPHRASE: ${{ secrets.EM_PASSPHRASE }}
@@ -67,6 +87,18 @@ jobs:
           TRAITE_URL: ${{ secrets.TRAITE_URL }}
           TRAITE_TOKEN: ${{ secrets.TRAITE_TOKEN }}
         run: python send_mail.py
+      - name: Noter l'envoi du jour (le lancement de secours de GitHub ne renverra pas de mail)
+        if: steps.mail.outcome == 'success' && (github.event_name == 'schedule' || github.event.inputs.mail == '1')
+        run: |
+          TZ=Europe/Paris date +%F > history/dernier-envoi.txt
+          git config user.name "actualisation-auto"
+          git config user.email "actions@users.noreply.github.com"
+          git add history/dernier-envoi.txt
+          git commit -m "Mail du matin envoyé le $(TZ=Europe/Paris date +%F)" || true
+          git pull --rebase || true
+          git push || true
+      - name: Ajouter le logo du mail au site publié
+        run: cp -f logo-mail.png site/logo-mail.png || true
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
