@@ -260,6 +260,18 @@ def box_label(par):
     return "MESSAGE PRÊT À ENVOYER (WHATSAPP)"
 
 
+def logo_url():
+    """Adresse publique du logo (hébergé avec le dashboard sur GitHub Pages). Vide si elle ne peut pas être déterminée."""
+    u = (os.environ.get("LOGO_URL") or "").strip()
+    if u:
+        return u
+    repo = (os.environ.get("GITHUB_REPOSITORY") or "").strip()
+    if "/" in repo:
+        owner, name = repo.split("/", 1)
+        return f"https://{owner.lower()}.github.io/{name}/logo-mail.png"
+    return ""
+
+
 def build(pack, today, last_full, mode=""):
     clients = [c for c in (pack.get("clients") or []) if not refresh.SETUP_RE.search(c.get("etape") or "")]
     feats = refresh.client_features(pack, clients, today, last_full)
@@ -310,10 +322,13 @@ def build(pack, today, last_full, mode=""):
         return head + f'<tr style="background:{bg}"><td colspan="3" style="padding:2px 8px 10px">{box(r, bg, border)}</td></tr>'
 
     banner = "TEST · mail de démonstration, à relire avant la mise en route" if test else "Mail du matin"
+    lu = logo_url()
+    logo_cell = (f'<td width="88" style="vertical-align:middle;padding-right:16px"><div style="background:#ffffff;border-radius:12px;padding:7px 8px;width:68px;text-align:center">'
+                 f'<img src="{esc(lu)}" alt="Agence Élite Média" width="60" style="display:block;border:0;height:auto;margin:0 auto"></div></td>') if lu else ""
     h = [f'<!doctype html><html lang="fr"><head><meta charset="utf-8"><title>{esc(subject)}</title></head><body style="margin:0;background:#f3f2ee;font-family:Arial,Helvetica,sans-serif;color:#16181d">'
          '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f3f2ee"><tr><td align="center" style="padding:24px 12px">'
          '<table role="presentation" width="680" cellpadding="0" cellspacing="0" style="max-width:680px;width:100%;background:#ffffff;border-radius:14px;overflow:hidden">'
-         f'<tr><td style="background:#e8630a;padding:18px 24px;color:#fff"><div style="font-size:13px;opacity:.9">{esc(banner)}</div><div style="font-size:22px;font-weight:800;margin-top:4px">À traiter aujourd’hui</div><div style="font-size:14px;margin-top:2px">{esc(jour.capitalize())}</div></td></tr>'
+         f'<tr><td style="background:#e8630a;padding:16px 24px;color:#fff"><table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>{logo_cell}<td style="vertical-align:middle;color:#fff"><div style="font-size:13px;opacity:.9">{esc(banner)}</div><div style="font-size:22px;font-weight:800;margin-top:4px">À traiter aujourd’hui</div><div style="font-size:14px;margin-top:2px">{esc(jour.capitalize())}</div></td></tr></table></td></tr>'
          '<tr><td style="padding:20px 24px 4px"><table role="presentation" width="100%" cellpadding="0" cellspacing="8"><tr>'
          f'<td width="25%" style="background:#fdf1ef;border:1px solid #f3b8b1;border-radius:10px;padding:10px 12px"><div style="font-size:26px;font-weight:800;color:#b42318">{len(reds)}</div><div style="font-size:12px;font-weight:700">à appeler</div></td>'
          f'<td width="25%" style="background:#fffbeb;border:1px solid #efd067;border-radius:10px;padding:10px 12px"><div style="font-size:26px;font-weight:800;color:#7a5300">{len(yell)}</div><div style="font-size:12px;font-weight:700">à écrire</div></td>'
