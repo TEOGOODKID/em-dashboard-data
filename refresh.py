@@ -720,6 +720,14 @@ def write_user_files(pack, raw_users, out_dir):
     except Exception:
         print("ATTENTION : TRAITE_TOKENS illisible (attendu : {\"emilie\": \"tr_…\"}) : ignoré, les personnes saisiront leur code.", flush=True)
         tokens = {}
+    # l'équipe (prénoms et photos) : chaque personne connectée reçoit celle de tout le monde, pour voir qui a traité quoi
+    team = {}
+    for u in users:
+        tid = str(u.get("id") or "").strip().lower()
+        ph = str(u.get("photo") or "")
+        if ph and not (ph.startswith("data:image/") and len(ph) <= 40000):
+            ph = ""                                             # photo absente ou trop lourde : on affiche les initiales
+        team[tid] = {"name": str(u.get("name") or tid), "photo": ph or None}
     seen, counts = set(), {}
     for u in users:
         uid = str(u.get("id") or "").strip().lower()
@@ -736,6 +744,7 @@ def write_user_files(pack, raw_users, out_dir):
         seen.add(uid)
         profile = {"id": uid, "name": str(u.get("name") or uid), "role": role, **ROLES[role]}
         sub = {**pack, "clients": clients_for(u, role, pack.get("clients") or []), "profile": profile}
+        sub["team"] = team
         if tokens.get(uid):
             sub["traite_token"] = str(tokens[uid])          # chiffré avec le mot de passe de cette personne : elle n'a plus de code à saisir
         if role != "admin":
