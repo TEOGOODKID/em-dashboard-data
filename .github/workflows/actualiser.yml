@@ -56,6 +56,7 @@ jobs:
           GHL_TOKEN: ${{ secrets.GHL_TOKEN }}
           GHL_LOCATION_ID: ${{ secrets.GHL_LOCATION_ID }}
           EM_USERS: ${{ secrets.EM_USERS }}
+          TRAITE_TOKENS: ${{ secrets.TRAITE_TOKENS }}
           PREV_URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/data.txt
           FORCE_FULL: ${{ github.event.inputs.complet }}
         run: python refresh.py
