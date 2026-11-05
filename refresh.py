@@ -1,3 +1,4 @@
+# VERSION 5 novembre 2026 (finale, avec coupure des derniers jours Google) : liens client/fiche (téléphone, entreprise, portail), plusieurs fiches par client, faits positifs élargis
 # -*- coding: utf-8 -*-
 """Actualisation du dashboard Elite Média.
 
@@ -302,8 +303,8 @@ def build_pack(listings, raw, reviews, today, last_full, series_days=210):
         rec["idx"] = len(fiches)
         fiches.append(rec)
         for dte, d in sorted(days.items()):
-            if dte < start_series:
-                continue
+            if dte < start_series or dte > last_full.isoformat():
+                continue                                           # Google publie ses statistiques avec plusieurs jours de retard : les derniers jours, vides ou incomplets, ne comptent pas
             v, c, a, i = impressions(d), d["website_clicks"], d["call_clicks"], d["direction_requests"]
             if v or c or a or i:
                 series_rows.append((rec["idx"], dte, v, c, a, i))
@@ -312,7 +313,7 @@ def build_pack(listings, raw, reviews, today, last_full, series_days=210):
     base = dt.date.fromisoformat(start_series)
     off = lambda s: (dt.date.fromisoformat(s) - base).days
     pack = {
-        "base": base.isoformat(), "built": today.isoformat(), "last_full": last_full.isoformat(), "fiches": fiches,
+        "base": base.isoformat(), "built": today.isoformat(), "last_full": last_full.isoformat(), "stats_fin": last_full.isoformat(), "fiches": fiches,
         "jours": {"n": [r[0] for r in series_rows], "d": [off(r[1]) for r in series_rows], "v": [r[2] for r in series_rows],
                   "c": [r[3] for r in series_rows], "a": [r[4] for r in series_rows], "i": [r[5] for r in series_rows]},
         "avis": {"n": [r[0] for r in avis_rows], "d": [off(r[1]) for r in avis_rows], "r": [r[2] for r in avis_rows]},
