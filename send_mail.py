@@ -216,7 +216,7 @@ def dans(n):
 def leviers(f):
     gestes = ["demander un avis à vos clients satisfaits, en citant la prestation et la ville"]
     if f is None or (f.get("photos") or 0) < 20:
-        gestes.append("nous envoyer quelques photos réelles de vos chantiers ou de votre équipe 📸")
+        gestes.append("nous envoyer quelques photos réelles de vos réalisations ou de votre équipe 📸")
     return gestes
 
 
@@ -315,11 +315,11 @@ def google_wrap(par, c, f):
     k = c.get("kpi") or {}
     chute = k.get("chg") is not None and k["chg"] <= -15
     if phase_of(c)[0] in ("resultats", "bilan"):
-        intro = "Une information sur votre fiche : depuis plusieurs semaines, Google compte beaucoup moins de vues de recherche sur les fiches en Europe. Ce changement touche la grande majorité des entreprises" + (", pas seulement la vôtre." if chute else ".")
+        intro = "Une information sur votre fiche : depuis plusieurs semaines, Google compte beaucoup moins de vues de recherche sur les fiches en Europe, suite à un changement d’affichage lié à une nouvelle réglementation européenne. Ce changement touche la grande majorité des entreprises" + (", pas seulement la vôtre." if chute else ".")
     else:
-        intro = "Une information utile sur les statistiques Google : depuis plusieurs semaines, Google compte beaucoup moins de vues de recherche sur les fiches en Europe. Ce changement touche la grande majorité des entreprises" + (", il n’est pas propre à votre fiche." if chute else ".")
+        intro = "Une information utile sur les statistiques Google : depuis plusieurs semaines, Google compte beaucoup moins de vues de recherche sur les fiches en Europe, suite à un changement d’affichage lié à une nouvelle réglementation européenne. Ce changement touche la grande majorité des entreprises" + (", il n’est pas propre à votre fiche." if chute else ".")
     tail = 2 if len(par) >= 3 and par[-2].startswith("Belle journée") else 1
-    return [par[0], intro] + par[1:-tail] + ["On suit votre fiche chaque semaine.", G_FIN] + par[-tail:]
+    return [par[0], intro] + par[1:-tail] + ["On suit votre fiche chaque semaine."] + par[-tail:]
 
 
 def compose(c, key, pos, kind, wd=None, why="", f=None, sigs=()):
