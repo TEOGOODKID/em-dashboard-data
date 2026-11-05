@@ -1,4 +1,4 @@
-# VERSION 5 novembre 2026 (finale, avec coupure des derniers jours Google) : liens client/fiche (téléphone, entreprise, portail), plusieurs fiches par client, faits positifs élargis
+# VERSION 5 novembre 2026 (finale, baisse générale de Google neutralisée) : liens client/fiche (téléphone, entreprise, portail), plusieurs fiches par client, faits positifs élargis
 # -*- coding: utf-8 -*-
 """Actualisation du dashboard Elite Média.
 
@@ -856,6 +856,14 @@ def client_features(pack, clients, today, last_full):
         a = t.setdefault(n, [0, 0])
         a[0] += v or 0
         a[1] += 1
+    # baisse GÉNÉRALE de Google : si toute la base baisse (ex. recherche Google en chute depuis fin septembre), on mesure chaque client
+    # par rapport à la médiane du portefeuille, pour ne pas faire passer en orange ou rouge des clients qui suivent le marché
+    import statistics as _st
+    evs = [e for e in (_ev3(f) for f in fiches.values()) if e is not None]
+    ev_med = _st.median(evs) if len(evs) >= 30 else 0.0
+    if ev_med > -0.05:
+        ev_med = 0.0                                               # on ne neutralise que les baisses générales, jamais les hausses
+    client_features.ev_med = ev_med
     rows = [(n, prv[n][0], cur[n][0]) for n in cur if n in prv and cur[n][1] >= 20 and prv[n][1] >= 20 and prv[n][0] >= 60]
     sp, sc = sum(r[1] for r in rows), sum(r[2] for r in rows)
     g = (sc / sp) if sp else 1
@@ -866,6 +874,8 @@ def client_features(pack, clients, today, last_full):
         idx = f.get("idx") if f else None
         sat = c.get("sat") or ""
         ev, chv = (_ev3(f) if f else None), (ch.get(idx) if f else None)
+        if ev is not None and ev_med:
+            ev = (1 + ev) / (1 + ev_med) - 1                       # écart au portefeuille, pas baisse brute
         out.append({
             "i": c["id"], "e": c.get("etape") or "", "a": c.get("age_m"), "r": 1 if c.get("rrm") == "Oui" else 0,
             "s": 2 if re.search(r"risque", sat, re.I) else (1 if re.search(r"(^|[^0-9])(30|50)\s?%", sat) else 0),
@@ -1173,6 +1183,9 @@ def main():
     pack["ghl"] = {"app": (os.environ.get("GHL_APP_URL") or "https://app.gohighlevel.com").rstrip("/"), "loc": loc} if loc else None
     try:
         fts = client_features(pack, [c for c in pack["clients"] if not SETUP_RE.search(c.get("etape") or "")], today, last_full)
+        pack["ev_med"] = round(getattr(client_features, "ev_med", 0.0), 3)
+        if pack["ev_med"]:
+            print(f"Baisse générale des vues sur 3 mois : {round(pack['ev_med'] * 100)} % (médiane du portefeuille) : les signaux « vues en baisse » sont mesurés par rapport à elle.", flush=True)
         nb = {"rouge": 0, "jaune": 0, "vert": 0, "contactes": 0, "jaune_sans_reponse": 0}
         for ft in fts:
             col, sg = feu_of(ft)
