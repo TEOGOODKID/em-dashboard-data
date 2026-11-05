@@ -1,4 +1,4 @@
-# VERSION 5 novembre 2026 (finale, message Google dans les fiches) : liens client/fiche (téléphone, entreprise, portail), plusieurs fiches par client, faits positifs élargis
+# VERSION 5 novembre 2026 (finale, page Baisse Google) : liens client/fiche (téléphone, entreprise, portail), plusieurs fiches par client, faits positifs élargis
 # -*- coding: utf-8 -*-
 """Actualisation du dashboard Elite Média.
 
@@ -744,9 +744,9 @@ def load_previous(pw, today):
 SETUP_RE = re.compile(r"SET UP GMB|Set up GMB|Appel Onboarding|Relance after|CLOSING", re.I)
 SENSITIVE = ("sat", "no_rep", "ct_j", "dm_j", "maj_j", "nt_j", "wa_c", "wa_d", "wa_t", "pf", "pfp")           # infos de churn : réservées à l'admin et au CSM
 ROLES = {
-    "admin": {"tabs": ["today", "clients", "setup", "renew", "overview", "sectors", "compare", "week", "rank", "reports", "table", "accounts"],
+    "admin": {"tabs": ["today", "clients", "gg", "setup", "renew", "overview", "sectors", "compare", "week", "rank", "reports", "table", "accounts"],
               "reports": ["client", "week", "dir"], "first": "today"},
-    "csm":   {"tabs": ["today", "clients", "reports", "table"], "reports": ["client", "week"], "first": "today"},
+    "csm":   {"tabs": ["today", "clients", "gg", "reports", "table"], "reports": ["client", "week"], "first": "today"},
     "gmb":   {"tabs": ["setup", "overview", "sectors", "compare", "week", "rank", "reports", "table"], "reports": ["client"], "first": "setup"},
     "sales": {"tabs": ["renew", "overview", "sectors", "compare", "rank", "reports", "table"], "reports": ["client"], "first": "renew"},
 }
