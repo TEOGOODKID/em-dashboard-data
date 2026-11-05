@@ -305,6 +305,23 @@ def pour_toi(c, f, key, why, sigs=(), today=None):
     return L
 
 
+G_FIN = "Google modifie l’affichage de ses résultats en Europe pour se conformer à une nouvelle réglementation européenne."
+
+
+def google_wrap(par, c, f):
+    """Ajoute aux messages écrits l’information sur la baisse générale des vues Google en Europe. Jamais pour une fiche suisse, ni sans fiche reliée."""
+    if not f or f.get("ch") or len(par) < 2 or par[-1] != SIG:
+        return par
+    k = c.get("kpi") or {}
+    chute = k.get("chg") is not None and k["chg"] <= -15
+    if phase_of(c)[0] in ("resultats", "bilan"):
+        intro = "Une information sur votre fiche : depuis plusieurs semaines, Google compte beaucoup moins de vues de recherche sur les fiches en Europe. Ce changement touche la grande majorité des entreprises" + (", pas seulement la vôtre." if chute else ".")
+    else:
+        intro = "Une information utile sur les statistiques Google : depuis plusieurs semaines, Google compte beaucoup moins de vues de recherche sur les fiches en Europe. Ce changement touche la grande majorité des entreprises" + (", il n’est pas propre à votre fiche." if chute else ".")
+    tail = 2 if len(par) >= 3 and par[-2].startswith("Belle journée") else 1
+    return [par[0], intro] + par[1:-tail] + ["On suit votre fiche chaque semaine.", G_FIN] + par[-tail:]
+
+
 def compose(c, key, pos, kind, wd=None, why="", f=None, sigs=()):
     """Message prêt à envoyer (liste de paragraphes terminée par la signature) ou brief d’appel pour les situations rouges."""
     p = first_name(c.get("nom"))
@@ -335,7 +352,7 @@ def compose(c, key, pos, kind, wd=None, why="", f=None, sigs=()):
     par = message_phase(c, f, pos, kind, hello, tuple(sigs) + (("avis",) if key == "avis" else ()))
     if key == "rdv":
         par = par[:-2] + ["Nous reviendrons vers vous très prochainement pour fixer la date de votre bilan.", SIG]
-    return par
+    return google_wrap(par, c, f)
 
 
 def box_label(par):
