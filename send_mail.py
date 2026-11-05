@@ -222,26 +222,31 @@ def leviers(f):
 def message_phase(c, f, pos, kind, hello, sigs=()):
     """Message client chaleureux, vrai, adapté à la phase. Aucun chiffre avant 60 jours ; ensuite, du positif seulement."""
     ph, d, lab = phase_of(c)
-    prise = "Votre fiche est déjà prise en main et suivie. " if f else ""
     g = leviers(f)
     gestes = ("Pour aider votre fiche, deux gestes comptent beaucoup : " + g[0] + ", et " + g[1] + ".") if len(g) > 1 else ("Pour aider votre fiche, un geste compte beaucoup : " + g[0] + ".")
     avis = ["Nous nous occupons aussi de répondre à vos derniers avis."] if "avis" in sigs else []
+    deja = [x for x in (c.get("done") or "").split("\n") if x]
+    en_place = (["Ce qui est déjà en place :\n" + "\n".join("✅ " + x[:1].upper() + x[1:] for x in deja)] if deja else [])
+    prise = "" if deja else ("Votre fiche est déjà prise en main et suivie. " if f else "")
     if ph == "etude":
         return [hello, "Un petit point sur l’avancement de votre fiche Google 😊",
-                prise + "Nous sommes dans la phase d’étude de marché : nous analysons votre secteur, les communes où vous voulez être trouvé, vos concurrents et les recherches de vos futurs clients, pour construire la bonne stratégie."] + avis + [
-                f"Vous recevrez ensuite notre message de stratégie ({dans(30 - d)}), puis un point à 2 mois et un bilan complet à 3 mois.", gestes, "Belle journée !", SIG]
+                prise + "Nous sommes dans la phase d’étude de marché : nous analysons votre secteur, les communes où vous voulez être trouvé, vos concurrents et les recherches de vos futurs clients, pour construire la bonne stratégie."] + en_place + avis + [
+                gestes, "Belle journée !", SIG]
     if ph in (None, "strategie"):
-        suite = f"Nous vous ferons un premier bilan à 2 mois ({dans(60 - d)})." if ph else "Nous vous ferons un premier bilan à 2 mois, puis un bilan complet à 3 mois."
         return [hello, "Un petit point sur votre fiche Google 😊",
-                prise + "Nous sommes dans la phase stratégie : nous travaillons la description et les services de votre fiche, les communes que vous voulez cibler, un rythme de publications et le suivi de vos positions."] + avis + [suite, gestes, "Belle journée !", SIG]
-    if pos:
-        fait = f"Je repense à votre dernier bilan : {pos}." if kind == "bilan" else f"Bonne nouvelle : {pos}."
+                prise + "Nous sommes dans la phase stratégie : nous travaillons la description et les services de votre fiche, les communes que vous voulez cibler, un rythme de publications et le suivi de vos positions."] + en_place + avis + [gestes, "Belle journée !", SIG]
+    faits = [x for x in (pos or "").split("\n") if x]
+    if kind == "bilan" and faits:
+        fait = "Je repense à votre dernier bilan : " + " ; ".join(faits) + "."
+    elif len(faits) >= 2:
+        fait = "Voici ce qui avance bien sur votre fiche :\n" + "\n".join("✅ " + x[:1].upper() + x[1:] for x in faits)
+    elif faits:
+        fait = "Bonne nouvelle : " + faits[0] + "."
     else:
         fait = "Nous continuons de travailler votre visibilité : publications régulières, photos, suivi de vos avis et de vos mots-clés."
-    suite = f"Nous ferons votre bilan complet à 3 mois ({dans(90 - d)})." if ph == "resultats" else f"Votre prochain bilan est prévu {dans(90 - (d % 90))}."
     return [hello, "Un petit point sur votre fiche Google 😊", fait] + avis + [
         "Pour rappel, Google classe les fiches selon l’endroit où se trouve la personne qui cherche : une même recherche donne donc des résultats différents d’un quartier à l’autre.",
-        gestes, suite, "Belle journée !", SIG]
+        gestes, "Belle journée !", SIG]
 
 
 def pour_toi(c, f, key, why, sigs=(), today=None):
@@ -280,6 +285,10 @@ def pour_toi(c, f, key, why, sigs=(), today=None):
             al.append("aucune publication enregistrée")
         if f.get("note") and f["note"] < 4.2 and (f.get("avis") or 0) >= 10:
             al.append(f"note de {str(f['note']).replace('.', ',')} : avis à travailler")
+    if c.get("nfi"):
+        al.append(f"client avec {c['nfi']} fiches : chiffres cumulés")
+    if c.get("lnm") in ("telephone", "entreprise", "nom"):
+        al.append("fiche reliée automatiquement (" + {"telephone": "téléphone", "entreprise": "nom d’entreprise", "nom": "nom du contact"}[c["lnm"]] + ") : à vérifier une fois")
     if (c.get("maj_j") or 0) >= 60:
         al.append(f"dossier non mis à jour depuis {c['maj_j']} jours")
     if c.get("gmb") and c["gmb"] != "GMB en ligne":
@@ -363,7 +372,7 @@ def build(pack, today, last_full, mode=""):
             continue
         key = next((k for k in PRIO if k in sigs), sigs[0] if sigs else "win")
         pts = sum(refresh.DEF_W.get(WKEY.get(k, k), 0) for k in sigs)
-        pos, kind, src = positives(c, fiches)
+        pos, kind, src = (c["pos"], c.get("pos_k"), "Statistiques Google et fiche reliée") if c.get("pos") else positives(c, fiches)
         rows.append({"c": c, "ft": ft, "color": color, "key": key, "pts": pts, "sigs": sigs, "pos": pos, "kind": kind, "src": src})
     order = lambda r: (PRIO.index(r["key"]) if r["key"] in PRIO else 99, -r["pts"], -(r["ft"].get("a") or 0))
     reds = sorted([r for r in rows if r["color"] == "rouge"], key=order)
