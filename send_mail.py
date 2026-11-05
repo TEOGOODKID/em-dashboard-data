@@ -187,15 +187,117 @@ def _sgn(n):
     return ("+" if n > 0 else "−" if n < 0 else "") + str(abs(int(n)))
 
 
-def compose(c, key, pos, kind, wd=None, why=""):
-    """Message prêt à envoyer (liste de paragraphes terminée par la signature), brief d'appel, ou avis « pas de message conseillé »."""
+# ----------------------------------------------------------------------------- phases et messages (prompt d'Émilie)
+def days_of(c):
+    a = c.get("age_m")
+    try:
+        return None if a is None else int(round(float(a) * 30.44))
+    except (TypeError, ValueError):
+        return None
+
+
+def phase_of(c):
+    """(clé, jour, libellé) : 0-29 j étude de marché, 30-59 j stratégie, 60-89 j premiers résultats, 90 j et plus bilan."""
+    d = days_of(c)
+    if d is None:
+        return None, None, "ancienneté inconnue"
+    for lim, k, lab in ((30, "etude", "étude de marché"), (60, "strategie", "stratégie"), (90, "resultats", "premiers résultats"), (10 ** 6, "bilan", "bilan")):
+        if d < lim:
+            return k, d, lab
+
+
+def dans(n):
+    if n <= 3:
+        return "dans quelques jours"
+    return f"d’ici environ {max(5, int(round(n / 5.0)) * 5)} jours"
+
+
+def leviers(f):
+    gestes = ["demander un avis à vos clients satisfaits, en citant la prestation et la ville"]
+    if f is None or (f.get("photos") or 0) < 20:
+        gestes.append("nous envoyer quelques photos réelles de vos chantiers ou de votre équipe 📸")
+    return gestes
+
+
+def message_phase(c, f, pos, kind, hello, sigs=()):
+    """Message client chaleureux, vrai, adapté à la phase. Aucun chiffre avant 60 jours ; ensuite, du positif seulement."""
+    ph, d, lab = phase_of(c)
+    prise = "Votre fiche est déjà prise en main et suivie. " if f else ""
+    g = leviers(f)
+    gestes = ("Pour aider votre fiche, deux gestes comptent beaucoup : " + g[0] + ", et " + g[1] + ".") if len(g) > 1 else ("Pour aider votre fiche, un geste compte beaucoup : " + g[0] + ".")
+    avis = ["Nous nous occupons aussi de répondre à vos derniers avis."] if "avis" in sigs else []
+    if ph == "etude":
+        return [hello, "Un petit point sur l’avancement de votre fiche Google 😊",
+                prise + "Nous sommes dans la phase d’étude de marché : nous analysons votre secteur, les communes où vous voulez être trouvé, vos concurrents et les recherches de vos futurs clients, pour construire la bonne stratégie."] + avis + [
+                f"Vous recevrez ensuite notre message de stratégie ({dans(30 - d)}), puis un point à 2 mois et un bilan complet à 3 mois.", gestes, "Belle journée !", SIG]
+    if ph in (None, "strategie"):
+        suite = f"Nous vous ferons un premier bilan à 2 mois ({dans(60 - d)})." if ph else "Nous vous ferons un premier bilan à 2 mois, puis un bilan complet à 3 mois."
+        return [hello, "Un petit point sur votre fiche Google 😊",
+                prise + "Nous sommes dans la phase stratégie : nous travaillons la description et les services de votre fiche, les communes que vous voulez cibler, un rythme de publications et le suivi de vos positions."] + avis + [suite, gestes, "Belle journée !", SIG]
+    if pos:
+        fait = f"Je repense à votre dernier bilan : {pos}." if kind == "bilan" else f"Bonne nouvelle : {pos}."
+    else:
+        fait = "Nous continuons de travailler votre visibilité : publications régulières, photos, suivi de vos avis et de vos mots-clés."
+    suite = f"Nous ferons votre bilan complet à 3 mois ({dans(90 - d)})." if ph == "resultats" else f"Votre prochain bilan est prévu {dans(90 - (d % 90))}."
+    return [hello, "Un petit point sur votre fiche Google 😊", fait] + avis + [
+        "Pour rappel, Google classe les fiches selon l’endroit où se trouve la personne qui cherche : une même recherche donne donc des résultats différents d’un quartier à l’autre.",
+        gestes, suite, "Belle journée !", SIG]
+
+
+def pour_toi(c, f, key, why, sigs=(), today=None):
+    """Note interne pour la CSM : à rappeler, phase, ce qui est laissé de côté, alertes."""
+    ph, d, lab = phase_of(c)
+    k = c.get("kpi") or {}
+    L = []
+    if key in CALL_KEYS:
+        L.append("À RAPPELER : " + (why or "client à risque"))
+    L.append(f"Phase : {lab}" + (f" (jour {d})" if d is not None else "") + f" · offre {c.get('offre') or 'non renseignée'}")
+    if f and f.get("ajout") and d is not None:
+        try:
+            ajout = dt.date.fromisoformat(str(f["ajout"])[:10]); debut = (today or dt.date.today()) - dt.timedelta(days=d)
+            gap = (ajout - debut).days
+            L.append(f"Fiche ajoutée dans Local Nord le {ajout.strftime('%d/%m')}" + (f" : {gap} jours après le début, prise en main tardive" if gap > 7 else ""))
+        except Exception:
+            pass
+    perdu = []
+    if k.get("chg") is not None and k["chg"] <= -10:
+        perdu.append(f"vues {_sgn(k['chg'])} % sur 28 jours" + (f" (secteur {_sgn(k['sm'])} %)" if k.get("sm") is not None else ""))
+    if k.get("ap") is not None and k.get("app") is not None and k["ap"] < k["app"]:
+        perdu.append(f"appels {k['ap']} contre {k['app']}")
+    if "avis" in sigs:
+        perdu.append("avis 1-2 étoiles récents")
+    if ph in ("etude", "strategie", None):
+        L.append("Aucun chiffre communiqué avant 60 jours." + (" Laissé de côté : " + " ; ".join(perdu) + "." if perdu else ""))
+    elif perdu:
+        L.append("Laissé de côté (baisses, non mentionnées au client) : " + " ; ".join(perdu) + ".")
+    al = []
+    if not f:
+        al.append("pas de fiche Local Nord reliée : aucun chiffre disponible")
+    else:
+        if (f.get("photos") or 0) < 5:
+            al.append(f"peu de photos ({f.get('photos') or 0})")
+        if (f.get("posts") or 0) == 0 and (d or 0) >= 30:
+            al.append("aucune publication enregistrée")
+        if f.get("note") and f["note"] < 4.2 and (f.get("avis") or 0) >= 10:
+            al.append(f"note de {str(f['note']).replace('.', ',')} : avis à travailler")
+    if (c.get("maj_j") or 0) >= 60:
+        al.append(f"dossier non mis à jour depuis {c['maj_j']} jours")
+    if c.get("gmb") and c["gmb"] != "GMB en ligne":
+        al.append(f"fiche : {c['gmb']}")
+    for kk, txt in (("wa_paie", "paiement échoué"), ("wa_atte", "demande du client sans réponse")):
+        if kk in sigs:
+            al.append(txt)
+    if al:
+        L.append("Alertes : " + " ; ".join(al) + ".")
+    L.append("Avant d’envoyer : joindre son lien d’avis. Non disponibles ici : paiement Stripe, positions des mots-clés.")
+    return L
+
+
+def compose(c, key, pos, kind, wd=None, why="", f=None, sigs=()):
+    """Message prêt à envoyer (liste de paragraphes terminée par la signature) ou brief d’appel pour les situations rouges."""
     p = first_name(c.get("nom"))
     hello = f"Bonjour {p}," if p else "Bonjour,"
     k = c.get("kpi") or {}
-    fait = ""
-    if pos:
-        fait = f"Je repense à votre dernier bilan : {pos}." if kind == "bilan" else f"Un petit point positif sur votre fiche : {pos}."
-    # ---- cas d'appel : on prépare l'appel, on n'écrit pas
     if key in CALL_KEYS:
         par = ["APPEL À PASSER : pas de message écrit pour ce cas."]
         if why:
@@ -205,51 +307,23 @@ def compose(c, key, pos, kind, wd=None, why=""):
             "wa_remb": "Vérifiez sa facturation avant d’appeler, puis expliquez simplement ce qui a été prélevé et pourquoi.",
             "wa_decu": "Reconnaissez sa déception, puis partez de ses résultats concrets plutôt que de promesses.",
         }.get(key, "Prenez de ses nouvelles, écoutez ses freins (budget, temps, résultats), puis proposez la suite adaptée."))
-        if pos:
+        ph = phase_of(c)[0]
+        if pos and ph in ("resultats", "bilan"):
             par.append(("Appuyez-vous sur son dernier bilan : " if kind == "bilan" else "À dire en premier : ") + pos + ".")
         if k.get("chg") is not None:
-            par.append(f"Chiffres internes : vues {_sgn(k['chg'])} % sur 28 jours" + (f", secteur {_sgn(k['sm'])} %" if k.get("sm") is not None else "") + ".")
+            par.append(f"Chiffres internes (ne pas citer au client) : vues {_sgn(k['chg'])} % sur 28 jours" + (f", secteur {_sgn(k['sm'])} %" if k.get("sm") is not None else "") + ".")
         if k.get("chg") is not None and k.get("sm") is not None and k["chg"] <= k["sm"] - 10:
             par.append("Sa baisse est plus forte que celle du secteur : cherchez la cause (site, horaires, avis, catégorie) avant d’appeler.")
         return par
-    # ---- messages écrits
     if key == "wa_paie":
         return [hello, "Un petit message pour vous prévenir que votre dernier prélèvement n’a pas pu passer. Ça arrive souvent (carte expirée, plafond, changement de banque) et ce n’est rien de grave.",
-                "Pouvez-vous simplement vérifier votre moyen de paiement ? Si vous préférez qu’on règle ça ensemble, dites-moi quand vous appeler et ce sera réglé en deux minutes.", SIG]
+                "Il suffit de vérifier votre moyen de paiement (carte à jour, plafond disponible) : le prélèvement repassera ensuite normalement, sans autre démarche de votre part.", SIG]
     if key == "wa_atte":
         return [hello, "Merci pour votre message et pour votre patience. Je prends votre demande en charge aujourd’hui et je vous réponds au plus vite.", SIG]
-    if key in DROP_KEYS:
-        sm, chg = k.get("sm"), k.get("chg")
-        if not (pos and sm is not None and chg is not None and chg <= -15 and abs(chg - sm) <= 10 and (k.get("sn") or 0) >= 8):
-            if chg is None:
-                return ["Pas de message conseillé : baisse des vues sans chiffres de comparaison. Regardez la fiche avant d’écrire au client."]
-            if sm is None or chg > -15 or not pos:
-                return [f"Pas de message conseillé : " + ("pas de comparaison possible avec le secteur" if sm is None else "pas de fait positif récent à mettre en avant") + f" (vues {_sgn(chg)} % sur 28 jours). Regardez la fiche avant d’écrire au client."]
-            return [f"Pas de message conseillé : la baisse de la fiche ({_sgn(chg)} %) est plus forte que celle du secteur ({_sgn(sm)} %). Cherchez d’abord la cause (site, horaires, avis, catégorie) avant d’écrire au client."]
-        env = max(5, int(round(abs(sm) / 5.0)) * 5)
-        return [hello, fait, f"Côté recherches, c’est une période plus calme dans votre secteur en général : environ {env} % de recherches en moins ces dernières semaines. C’est un mouvement global, qui n’est pas propre à votre fiche.",
-                "On continue les publications et le suivi de vos avis, et on suit tout ça chaque semaine. Vous n’avez rien à faire de votre côté.", SIG]
-    if key in ("ech2", "ech1"):
-        quand = "dans une semaine" if key == "ech2" else "dans environ un mois"
-        par = [hello, f"Un petit mot en avance : votre prochain bilan approche ({quand})."]
-        if pos:
-            par.append(f"Votre fiche se porte bien : {pos}." if kind != "bilan" else f"Pour mémoire, au dernier bilan : {pos}.")
-        par += ["On regardera ensemble les mots-clés sur lesquels vous progressez et ce qu’on peut pousser pour la suite. Rien à préparer de votre côté.", SIG]
-        return par
+    par = message_phase(c, f, pos, kind, hello, tuple(sigs) + (("avis",) if key == "avis" else ()))
     if key == "rdv":
-        par = [hello, "Je vous propose de planifier votre prochain bilan, pour regarder vos résultats ensemble."]
-        if pos:
-            par.append(f"Votre fiche se porte bien : {pos}." if kind != "bilan" else f"Pour mémoire, au dernier bilan : {pos}.")
-        par += ["Quel créneau vous convient cette semaine ?", SIG]
-        return par
-    if key == "avis":
-        return [hello, "J’ai vu les derniers avis laissés sur votre fiche. Nous nous en occupons et nous y répondons pour vous, rien à faire de votre côté.", SIG]
-    # ---- tous les autres cas (silence, sans réponse, dossier peu mis à jour…) : une bonne nouvelle vraie, ou rien
-    if not pos:
-        return ["Pas de message conseillé : aucun fait positif récent à mettre en avant. Regardez la fiche avant de contacter ce client."]
-    ouverture = "Je voulais vous partager une bonne nouvelle sur votre fiche : " if kind != "bilan" else "Je repense à votre dernier bilan : "
-    return [hello, ouverture + pos + ".", "Votre fiche travaille bien pour vous : on continue sur cette lancée, avec les publications et le suivi de vos avis.",
-            "Vous n’avez rien à faire de votre côté, et si une envie ou une question vous vient, on est là.", SIG]
+        par = par[:-2] + ["Nous reviendrons vers vous très prochainement pour fixer la date de votre bilan.", SIG]
+    return par
 
 
 def box_label(par):
@@ -305,10 +379,13 @@ def build(pack, today, last_full, mode=""):
         return f"{base}/v2/location/{loc}/contacts/detail/{c['cid']}" if c.get("cid") and loc else ""
 
     def box(r, bg, border):
-        msg = compose(r["c"], r["key"], r["pos"], r["kind"], r["ft"].get("wd"), reason_text(r["key"], r["ft"]))
+        f = fiches.get(r["c"].get("lnid")) if r["c"].get("lnid") else None
+        msg = compose(r["c"], r["key"], r["pos"], r["kind"], r["ft"].get("wd"), reason_text(r["key"], r["ft"]), f, r["sigs"])
+        note = pour_toi(r["c"], f, r["key"], reason_text(r["key"], r["ft"]), r["sigs"], today)
         body = "<br><br>".join(esc(p) for p in msg)
         s = f'<div style="font-size:10px;font-weight:700;color:#566070;letter-spacing:.04em;margin-bottom:4px">{box_label(msg)}</div><div style="font-size:13px;line-height:1.5;background:#ffffff;border:1px solid {border};border-radius:8px;padding:10px 12px">{body}</div>'
-        s += f'<div style="font-size:10px;color:#8a90a0;margin-top:4px">{"Chiffres : " + esc(r["src"]) if r["src"] else "Pas de chiffres disponibles : message sans chiffres"}</div>'
+        s += ('<div style="font-size:10px;font-weight:700;color:#566070;letter-spacing:.04em;margin:8px 0 3px">POUR TOI (INTERNE)</div><div style="font-size:12px;line-height:1.45;color:#3b4252;background:#f6f5f1;border-radius:8px;padding:8px 10px">'
+              + "<br>".join(("<b>" + esc(x) + "</b>") if x.startswith("À RAPPELER") else esc(x) for x in note) + "</div>")
         return s
 
     def row_html(r, bg, border, ncols):
@@ -353,7 +430,9 @@ def build(pack, today, last_full, mode=""):
             t += [titre, "-" * len(titre)]
             for r in lst:
                 t.append(f"* {r['c'].get('nom')} : " + " ; ".join(reason_text(k, r['ft']) for k in sorted(r['sigs'], key=lambda k: PRIO.index(k) if k in PRIO else 99)[:3]))
-                t += ["  " + ligne for p in compose(r["c"], r["key"], r["pos"], r["kind"], r["ft"].get("wd"), reason_text(r["key"], r["ft"])) for ligne in (p, "")]
+                f_ = fiches.get(r["c"].get("lnid")) if r["c"].get("lnid") else None
+                t += ["  " + ligne for p in compose(r["c"], r["key"], r["pos"], r["kind"], r["ft"].get("wd"), reason_text(r["key"], r["ft"]), f_, r["sigs"]) for ligne in (p, "")]
+                t += ["  POUR TOI (interne) :"] + ["   - " + x for x in pour_toi(r["c"], f_, r["key"], reason_text(r["key"], r["ft"]), r["sigs"], today)] + [""]
     return subject, "".join(h), "\n".join(t), {"rouges": len(reds), "jaunes": len(yell), "contactes": contacted, "verts": greens}
 
 
