@@ -253,6 +253,7 @@ def build_pack(listings, raw, reviews, today, last_full, series_days=210):
         for s in r["social"]:
             soc.setdefault(s["type"], s.get("url"))
         pd_ = sorted(d[:10] for d in r["pub_dates"] if d and dt.date.fromisoformat(d[:10]) >= A)
+        LN_PHONES[x["id"]] = _tel(x.get("phone"))
         rec = {
             "id": x["id"], "nom": x["name"], "secteur": sector, "categorie": x["category"], "ville": ville, "dept": departement(cp),
             "site": "Oui" if has_real_site(x.get("website")) else "Non",
@@ -361,6 +362,45 @@ def _norm(s):
 
 def _toks(s):
     return [t for t in _norm(s).split() if len(t) > 2]
+
+
+LN_PHONES = {}                                                     # identifiant de fiche -> téléphone normalisé (jamais publié)
+MANUAL_LINKS = {}                                                  # liens validés à la main (fichier liens.json) : identifiant d’opportunité -> identifiant de fiche
+MANUAL_EXTRA = {}                                                  # fiches supplémentaires d’un client qui en a plusieurs : identifiant d’opportunité -> liste
+
+
+def _tel(s):
+    """Neuf derniers chiffres d’un numéro de téléphone (06 12 34 56 78, +33 6 12 34 56 78, 0033612345678 : même résultat)."""
+    d = re.sub(r"\D", "", str(s or ""))
+    return d[-9:] if len(d) >= 9 else ""
+
+
+def link_fiche(o, field_value, known, by_name):
+    """Relie un client à sa fiche Local Nord. Renvoie (identifiant, méthode) ; méthode : champ, telephone, entreprise, nom.
+    Règles prudentes : une seule fiche possible à chaque étape, sinon on ne relie pas (jamais de chiffres d’un autre client)."""
+    ct = o.get("contact") or {}
+    lnid = str(field_value or "").strip()
+    if lnid in known:
+        return lnid, "champ"
+    fid = MANUAL_LINKS.get(str(o.get("id") or ""))
+    if fid in known:
+        return fid, "manuel"
+    ph = _tel(ct.get("phone"))
+    if ph:
+        c = [fid for fid, tel in LN_PHONES.items() if tel == ph and fid in known]
+        if len(c) == 1:
+            return c[0], "telephone"
+    t = _toks(ct.get("companyName"))
+    if len(t) >= 2:
+        c = [fid for fid, ft in by_name if all(x in ft for x in t)]
+        if len(c) == 1:
+            return c[0], "entreprise"
+    t = _toks(ct.get("name") or o.get("name"))
+    if len(t) >= 2:
+        c = [fid for fid, ft in by_name if all(x in ft for x in t)]
+        if len(c) == 1:
+            return c[0], "nom"
+    return None, None
 
 
 def _days(a, b):
@@ -510,20 +550,14 @@ def clients_from_ghl(opps, stages, field_ids, fiches, now):
         etape_j, maj_j = (_days(stg, now) if stg else None), (_days(upd, now) if upd else None)
         is_stale = bool(etape_j is not None and etape_j >= STALE_STAGE_DAYS and maj_j is not None and maj_j >= STALE_UPDATE_DAYS
                         and not SETUP_RE.search(etape) and not (wa_c and wa_d is not None and wa_d <= 30) and not (dm_j is not None and dm_j < 30))
-        lnid = str(val("ID Local Nord") or "").strip()
-        if lnid not in known:
-            lnid = None
-            t = _toks((o.get("contact") or {}).get("name") or o.get("name"))
-            if len(t) >= 2:
-                c = [fid for fid, ft in by_name if all(x in ft for x in t)]
-                lnid = c[0] if len(c) == 1 else None
+        lnid, lnm = link_fiche(o, val("ID Local Nord"), known, by_name)
         out.append({
             "id": o["id"], "nom": str(o.get("name") or ""), "etape": etape,
             "age_m": round(_days(start, exp) / 30.44, 1) if start else 0,
             "rrm": rrm, "sat": sat, "gmb": val("Situation GMB") or "", "acces": val("Accès GMB") or "",
             "maj_j": _days(upd, now) if upd else None, "etape_j": _days(stg, now) if stg else None,
             "offre": "198€" if "198€" in tg else ("98€" if "98€" in tg else ""),
-            "no_rep": no_rep, "lnid": lnid, "exp": now.date().isoformat(),
+            "no_rep": no_rep, "lnid": lnid, "lnm": lnm, "lnx": MANUAL_EXTRA.get(str(o.get("id") or "")) or None, "exp": now.date().isoformat(),
             "dm_j": dm_j,
             "ct_j": _days(ct, now) if ct else None,
             "resp": str(o.get("assignedTo") or ""),
@@ -595,6 +629,18 @@ def fetch_note_days(g, rows, now):
 
 
 def fetch_clients(token, location, fiches, now):
+    try:
+        with open("liens.json", encoding="utf-8") as fh:
+            for k, v in json.load(fh).items():
+                v = v if isinstance(v, list) else [v]
+                MANUAL_LINKS[str(k)] = str(v[0])
+                if len(v) > 1:
+                    MANUAL_EXTRA[str(k)] = [str(x) for x in v[1:]]
+        print(f"Liens validés à la main : {len(MANUAL_LINKS)}.", flush=True)
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        print("liens.json ignoré :", str(e)[:100], flush=True)
     g = Ghl(token)
     pipes = g.get("/opportunities/pipelines", {"locationId": location}).get("pipelines") or []
     pipe = next((p for p in pipes if "clients gmb" in (p.get("name") or "").lower()), None)
@@ -613,6 +659,9 @@ def fetch_clients(token, location, fiches, now):
             break
         params = {**params, "startAfter": meta["startAfter"], "startAfterId": meta["startAfterId"]}
     rows = clients_from_ghl(opps, stages, field_ids, fiches, now)
+    from collections import Counter as _Cnt
+    _m = _Cnt(r.get("lnm") or "non reliés" for r in rows)
+    print("Clients reliés à une fiche Local Nord : " + ", ".join(f"{k} {v}" for k, v in _m.most_common()) + ".", flush=True)
     try:
         nn = fetch_note_days(g, rows, now)
         print(f"Notes GoHighLevel : {nn} clients lus, {sum(1 for r in rows if r.get('nt_j') is not None)} avec une note humaine.", flush=True)
@@ -950,49 +999,99 @@ def _positives(c, fiches):
     return "", None
 
 
+def _merge_fiches(fs):
+    """Un client qui a plusieurs fiches : on additionne leurs chiffres (avis, photos, publications, cumul) et on pondère la note."""
+    if len(fs) == 1:
+        return fs[0]
+    out = dict(fs[0])
+    for k in ("avis", "photos", "posts", "v_cumul", "a_cumul"):
+        out[k] = sum((f.get(k) or 0) for f in fs)
+    tot = sum((f.get("avis") or 0) for f in fs)
+    if tot:
+        out["note"] = round(sum((f.get("note") or 0) * (f.get("avis") or 0) for f in fs) / tot, 2)
+    out["mois_dispo"] = min((f.get("mois_dispo") or 0) for f in fs)
+    return out
+
+
 def compute_facts(pack):
-    """Ajoute à chaque client : « pos » (faits positifs vrais), « pos_k » (leur type) et « kpi » (variation des vues sur 28 jours,
-    comparée à la médiane de son secteur quand au moins 8 fiches comparables existent). Colonnes : v = vues, c = clics site, a = appels."""
+    """Ajoute à chaque client : « pos » (faits positifs vrais, un par ligne, 3 au maximum), « pos_k » (leur type), « done »
+    (ce qui est déjà en place, sans aucun chiffre, pour les clients de moins de 60 jours) et « kpi » (variation des vues sur
+    28 jours, comparée à la médiane de son secteur quand au moins 8 fiches comparables existent).
+    Colonnes : v = vues, c = clics site, a = appels, i = itinéraires."""
     import statistics
     F = pack.get("fiches") or []
     byid = {f.get("id"): f for f in F}
     idx = {f.get("id"): i for i, f in enumerate(F)}
     J = pack.get("jours") or {}
-    agg, med = {}, {}
+    agg, med, rev = {}, {}, {}
     if J.get("d"):
         last = max(J["d"])
-        for n, d, v, a_ in zip(J["n"], J["d"], J["v"], J["a"]):
+        zc, zi = J.get("c") or [0] * len(J["d"]), J.get("i") or [0] * len(J["d"])
+        for n, d, v, a_, c_, i_ in zip(J["n"], J["d"], J["v"], J["a"], zc, zi):
             if last - 27 <= d <= last:
-                t = agg.setdefault(n, [0, 0, 0, 0]); t[0] += v; t[2] += a_
+                t = agg.setdefault(n, [0] * 8); t[0] += v; t[2] += a_; t[4] += c_ or 0; t[6] += i_ or 0
             elif last - 55 <= d < last - 27:
-                t = agg.setdefault(n, [0, 0, 0, 0]); t[1] += v; t[3] += a_
+                t = agg.setdefault(n, [0] * 8); t[1] += v; t[3] += a_; t[5] += c_ or 0; t[7] += i_ or 0
         sect = {}
         for i, f in enumerate(F):
             t = agg.get(i)
             if t and t[1] >= 100:
                 sect.setdefault(f.get("secteur"), []).append((t[0] - t[1]) / t[1] * 100)
         med = {k: (statistics.median(v), len(v)) for k, v in sect.items() if k and len(v) >= 8}
+        A = pack.get("avis") or {}
+        for n, d, r_ in zip(A.get("n") or [], A.get("d") or [], A.get("r") or []):
+            if last - 59 <= d <= last and r_:
+                rev.setdefault(n, []).append(r_)
+    pc = lambda x, y: round((x / y - 1) * 100)
     for c in pack.get("clients") or []:
         i = idx.get(c.get("lnid"))
-        f = F[i] if i is not None else None
-        t = agg.get(i) if i is not None else None
-        growth = []
+        ids = [x for x in [i] + [idx.get(y) for y in (c.get("lnx") or [])] if x is not None]
+        f = _merge_fiches([F[x] for x in ids]) if ids else None
+        ts = [agg[x] for x in ids if x in agg]
+        t = [sum(col) for col in zip(*ts)] if ts else None
+        c["nfi"] = len(ids) if len(ids) > 1 else None
+        items, stats = [], False
         if t:
-            if t[2] >= 8 and t[3] >= 1 and t[2] >= t[3] * 1.15:
-                growth.append(f"{t[2]} appels ces 4 dernières semaines, contre {t[3]} le mois précédent ({round((t[2] / t[3] - 1) * 100)} % de plus)")
-            if t[1] >= 100 and t[0] >= t[1] * 1.15:
-                growth.append(f"visibilité en hausse de {round((t[0] / t[1] - 1) * 100)} % sur la même période")
-        note = None
-        if f and f.get("note") and f.get("avis") and f["note"] >= 4.5 and f["avis"] >= 10:
-            note = ("5 sur 5" if f["note"] >= 4.95 else str(round(f["note"], 1)).replace(".", ",") + " sur 5") + f" avec {f['avis']} avis"
-        if growth:
-            c["pos"], c["pos_k"] = ", ".join(growth[:2] + ([f"une note de {note}"] if note else [])), "stats"
-        elif note:
-            c["pos"], c["pos_k"] = f"une note de {note}", "note"
+            if t[2] >= 5 and t[3] >= 1 and t[2] > t[3]:
+                items.append(f"{t[2]} appels ces 4 dernières semaines, contre {t[3]} le mois précédent"); stats = True
+            if t[1] >= 100 and t[0] >= t[1] * 1.10:
+                items.append(f"{pc(t[0], t[1])} % de visibilité en plus ces 4 dernières semaines"); stats = True
+            if t[7] >= 5 and t[6] >= 10 and t[6] >= t[7] * 1.15:
+                items.append(f"{pc(t[6], t[7])} % de demandes d’itinéraire en plus"); stats = True
+            if t[5] >= 5 and t[4] >= 10 and t[4] >= t[5] * 1.15:
+                items.append(f"{pc(t[4], t[5])} % de clics vers votre site en plus"); stats = True
+        rv = [r for x in ids for r in rev.get(x, [])] or None
+        if rv and len(rv) >= 2 and sum(rv) / len(rv) >= 4.3:
+            items.append(f"{len(rv)} nouveaux avis clients ces 2 derniers mois, pour une note moyenne de {str(round(sum(rv) / len(rv), 1)).replace('.', ',')}")
+        if f and f.get("note") and f.get("avis") and f["note"] >= 4.0 and f["avis"] >= 5:
+            nt = "5 sur 5" if f["note"] >= 4.95 else str(round(f["note"], 1)).replace(".", ",") + " sur 5"
+            items.append(f"une note de {nt} avec {f['avis']} avis")
+        if f and f.get("v_cumul") and f["v_cumul"] >= 300 and (f.get("mois_dispo") or 0) >= 2:
+            items.append(f"{_nf(f['v_cumul'])} affichages" + (f" et {f['a_cumul']} appels" if (f.get("a_cumul") or 0) >= 3 else "") + " depuis le début de notre collaboration")
+        if f and ((f.get("posts") or 0) >= 3 or (f.get("photos") or 0) >= 10):
+            parts = []
+            if (f.get("posts") or 0) >= 3:
+                parts.append(f"{f['posts']} publications")
+            if (f.get("photos") or 0) >= 10:
+                parts.append(f"{f['photos']} photos")
+            items.append(" et ".join(parts) + " mises en ligne sur votre fiche")
+        if items:
+            c["pos"] = "\n".join(items[:3])
+            c["pos_k"] = "stats" if stats else ("note" if any(("note" in x or "avis" in x) for x in items[:3]) else "work")
         else:
             pos, kind = _positives(c, byid)
             if pos:
                 c["pos"], c["pos_k"] = pos, kind
+        done = []
+        if f:
+            if (f.get("photos") or 0) >= 5:
+                done.append("des photos ont déjà été ajoutées à votre fiche")
+            if (f.get("posts") or 0) >= 1:
+                done.append("vos premières publications sont en ligne")
+            if (c.get("gmb") or "") == "GMB en ligne":
+                done.append("votre fiche est en ligne et suivie chaque semaine")
+        if done:
+            c["done"] = "\n".join(done[:3])
         if t and t[1] >= 100:
             m = med.get(f.get("secteur")) if f else None
             c["kpi"] = {"chg": round((t[0] - t[1]) / t[1] * 100), "sm": round(m[0]) if m else None, "sn": m[1] if m else 0,
