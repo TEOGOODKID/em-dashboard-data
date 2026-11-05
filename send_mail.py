@@ -1,3 +1,4 @@
+# VERSION 5 novembre 2026 (finale) : messages par phase, faits positifs en puces, « Ce qui est déjà en place », « client avec N fiches »
 #!/usr/bin/env python3
 """E-mail du matin : clients à appeler et à écrire, avec un message prêt à envoyer pour chacun.
 
@@ -275,6 +276,8 @@ def pour_toi(c, f, key, why, sigs=(), today=None):
         L.append("Aucun chiffre communiqué avant 60 jours." + (" Laissé de côté : " + " ; ".join(perdu) + "." if perdu else ""))
     elif perdu:
         L.append("Laissé de côté (baisses, non mentionnées au client) : " + " ; ".join(perdu) + ".")
+    if k.get("chg") is not None and k["chg"] <= -15 and (today or dt.date.today()) >= dt.date(2026, 9, 22):
+        L.append("Contexte Google : depuis le 22/09/2026, les vues de la recherche Google sont comptées beaucoup plus bas dans toute l’Europe (baisse générale, appels et itinéraires stables) : cette baisse n’est pas propre à cette fiche.")
     al = []
     if not f:
         al.append("pas de fiche Local Nord reliée : aucun chiffre disponible")
