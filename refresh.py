@@ -1,4 +1,4 @@
-# VERSION 5 novembre 2026 (finale, baisse générale de Google neutralisée) : liens client/fiche (téléphone, entreprise, portail), plusieurs fiches par client, faits positifs élargis
+# VERSION 5 novembre 2026 (finale, message Google dans les fiches) : liens client/fiche (téléphone, entreprise, portail), plusieurs fiches par client, faits positifs élargis
 # -*- coding: utf-8 -*-
 """Actualisation du dashboard Elite Média.
 
@@ -236,6 +236,18 @@ def block(days, start, n=30):
     return vals, cnt
 
 
+def _is_swiss(address, phone):
+    """Fiche suisse (hors Union européenne) : numéro +41 ou format 0xx xxx xx xx, avec code postal à 4 chiffres quand l’adresse est connue."""
+    ph = (phone or "").strip()
+    p2 = re.sub(r"[\s.\-()]", "", ph)
+    if p2.startswith(("+41", "0041")):
+        return True
+    if not re.match(r"^0\d{2} \d{3} \d{2} \d{2}$", ph):
+        return False
+    a = address or ""
+    return (not a) or bool(re.search(r"(?<!\d)\d{4}(?!\d)", a) and not re.search(r"(?<!\d)\d{5}(?!\d)", a))
+
+
 def build_pack(listings, raw, reviews, today, last_full, series_days=210):
     fiches, series_rows = [], []
     start_series = (today - dt.timedelta(days=series_days)).isoformat()
@@ -266,6 +278,8 @@ def build_pack(listings, raw, reviews, today, last_full, series_days=210):
             "premier_post": pd_[0] if pd_ else None,
             "mois_optim": round((today - dt.date.fromisoformat(pd_[0])).days / 30.44, 1) if pd_ else None,
         }
+        if _is_swiss(x.get("address"), x.get("phone")):
+            rec["ch"] = 1
         dispo_pre = 0
         for j in range(1, 5):
             b, c = block(days, A - dt.timedelta(days=30 * j)); ok = c >= 28
