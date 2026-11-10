@@ -1191,6 +1191,19 @@ def main():
         print("GHL_TOKEN ou GHL_LOCATION_ID absent : l'onglet « À traiter » restera vide.", flush=True)
         pack["clients"] = getattr(load_previous, "clients", [])
     try:
+        with open("google_informes.json", encoding="utf-8") as fh:             # clients déjà informés du changement Google en Europe
+            ginf = {str(x) for x in json.load(fh)}
+        nb_inf = 0
+        for c in pack["clients"]:
+            if str(c.get("id")) in ginf:
+                c["ginf"] = 1
+                nb_inf += 1
+        print(f"Clients déjà informés du changement Google : {nb_inf}.", flush=True)
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        print("google_informes.json ignoré :", str(e)[:100], flush=True)
+    try:
         compute_facts(pack)
     except Exception as e:
         print("Messages personnalisés : faits ignorés (" + str(e)[:100] + ")", flush=True)
