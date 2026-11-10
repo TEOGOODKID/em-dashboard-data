@@ -220,10 +220,40 @@ def leviers(f):
     return gestes
 
 
+MOIS = ["janvier", "février", "mars", "avril", "mai", "juin", "juillet", "août", "septembre", "octobre", "novembre", "décembre"]
+
+
+def _add_months(d, n):
+    import calendar
+    y, m = d.year + (d.month - 1 + n) // 12, (d.month - 1 + n) % 12 + 1
+    return dt.date(y, m, min(d.day, calendar.monthrange(y, m)[1]))
+
+
+def _fr_date(d):
+    return ("1er" if d.day == 1 else str(d.day)) + " " + MOIS[d.month - 1]
+
+
+def etape_suivante(ph, d, today=None):
+    """Prochaine étape datée, comme dans le prompt d’Émilie (étude : jalons ; stratégie : bilan à 2 mois ; résultats : bilan à 3 mois ; bilan : prochain bilan). Jamais de compte à rebours."""
+    if ph is None or d is None:
+        return []
+    if ph == "etude":
+        return ["Prochaines étapes : un message stratégie à 30 jours, un point à 2 mois et le bilan à 3 mois."]
+    t = today or dt.date.today()
+    debut = t - dt.timedelta(days=d)
+    for n in ((2,) if ph == "strategie" else (3,) if ph == "resultats" else (3, 6, 12)):
+        dn = _add_months(debut, n)
+        if dn > t:
+            lead = "Le bilan à 2 mois est prévu le " if ph == "strategie" else "Le bilan à 3 mois est prévu le " if ph == "resultats" else f"Le prochain bilan, à {n} mois, est prévu le "
+            return [lead + _fr_date(dn) + "."]
+    return []
+
+
 def message_phase(c, f, pos, kind, hello, sigs=()):
     """Message client chaleureux, vrai, adapté à la phase. Aucun chiffre avant 60 jours ; ensuite, du positif seulement."""
     ph, d, lab = phase_of(c)
     g = leviers(f)
+    suite = etape_suivante(ph, d)
     gestes = ("Pour aider votre fiche, deux gestes comptent beaucoup : " + g[0] + ", et " + g[1] + ".") if len(g) > 1 else ("Pour aider votre fiche, un geste compte beaucoup : " + g[0] + ".")
     avis = ["Nous nous occupons aussi de répondre à vos derniers avis."] if "avis" in sigs else []
     deja = [x for x in (c.get("done") or "").split("\n") if x]
@@ -232,10 +262,10 @@ def message_phase(c, f, pos, kind, hello, sigs=()):
     if ph == "etude":
         return [hello, "Un petit point sur l’avancement de votre fiche Google 😊",
                 prise + "Nous sommes dans la phase d’étude de marché : nous analysons votre secteur, les communes où vous voulez être trouvé, vos concurrents et les recherches de vos futurs clients, pour construire la bonne stratégie."] + en_place + avis + [
-                gestes, "Belle journée !", SIG]
+                gestes] + suite + ["Belle journée !", SIG]
     if ph in (None, "strategie"):
         return [hello, "Un petit point sur votre fiche Google 😊",
-                prise + "Nous sommes dans la phase stratégie : nous travaillons la description et les services de votre fiche, les communes que vous voulez cibler, un rythme de publications et le suivi de vos positions."] + en_place + avis + [gestes, "Belle journée !", SIG]
+                prise + "Nous sommes dans la phase stratégie : nous travaillons la description et les services de votre fiche, les communes que vous voulez cibler, un rythme de publications et le suivi de vos positions."] + en_place + avis + [gestes] + suite + ["Belle journée !", SIG]
     faits = [x for x in (pos or "").split("\n") if x]
     if kind == "bilan" and faits:
         fait = "Je repense à votre dernier bilan : " + " ; ".join(faits) + "."
@@ -247,7 +277,7 @@ def message_phase(c, f, pos, kind, hello, sigs=()):
         fait = "Nous continuons de travailler votre visibilité : publications régulières, photos, suivi de vos avis et de vos mots-clés."
     return [hello, "Un petit point sur votre fiche Google 😊", fait] + avis + [
         "Pour rappel, Google classe les fiches selon l’endroit où se trouve la personne qui cherche : une même recherche donne donc des résultats différents d’un quartier à l’autre.",
-        gestes, "Belle journée !", SIG]
+        gestes] + suite + ["Belle journée !", SIG]
 
 
 def pour_toi(c, f, key, why, sigs=(), today=None):
@@ -276,7 +306,7 @@ def pour_toi(c, f, key, why, sigs=(), today=None):
         L.append("Aucun chiffre communiqué avant 60 jours." + (" Laissé de côté : " + " ; ".join(perdu) + "." if perdu else ""))
     elif perdu:
         L.append("Laissé de côté (baisses, non mentionnées au client) : " + " ; ".join(perdu) + ".")
-    if k.get("chg") is not None and k["chg"] <= -15 and (today or dt.date.today()) >= dt.date(2026, 9, 22):
+    if GOOGLE_INFO and k.get("chg") is not None and k["chg"] <= -15 and (today or dt.date.today()) >= dt.date(2026, 9, 22):
         L.append("Contexte Google : depuis le 22/09/2026, les vues de la recherche Google sont comptées beaucoup plus bas dans toute l’Europe (baisse générale, appels et itinéraires stables) : cette baisse n’est pas propre à cette fiche.")
     al = []
     if not f:
@@ -306,6 +336,7 @@ def pour_toi(c, f, key, why, sigs=(), today=None):
 
 
 G_FIN = "Google modifie l’affichage de ses résultats en Europe pour se conformer à une nouvelle réglementation européenne."
+GOOGLE_INFO = False          # True = ajoute le paragraphe « baisse Google en Europe » aux messages (désactivé le 10/11/2026 : les messages suivent le prompt d’Émilie)
 
 
 def google_wrap(par, c, f):
@@ -352,7 +383,7 @@ def compose(c, key, pos, kind, wd=None, why="", f=None, sigs=()):
     par = message_phase(c, f, pos, kind, hello, tuple(sigs) + (("avis",) if key == "avis" else ()))
     if key == "rdv":
         par = par[:-2] + ["Nous reviendrons vers vous très prochainement pour fixer la date de votre bilan.", SIG]
-    return google_wrap(par, c, f)
+    return google_wrap(par, c, f) if GOOGLE_INFO else par
 
 
 def box_label(par):
