@@ -306,8 +306,8 @@ def pour_toi(c, f, key, why, sigs=(), today=None):
         L.append("Aucun chiffre communiqué avant 60 jours." + (" Laissé de côté : " + " ; ".join(perdu) + "." if perdu else ""))
     elif perdu:
         L.append("Laissé de côté (baisses, non mentionnées au client) : " + " ; ".join(perdu) + ".")
-    if GOOGLE_INFO and k.get("chg") is not None and k["chg"] <= -15 and (today or dt.date.today()) >= dt.date(2026, 9, 22):
-        L.append("Contexte Google : depuis le 22/09/2026, les vues de la recherche Google sont comptées beaucoup plus bas dans toute l’Europe (baisse générale, appels et itinéraires stables) : cette baisse n’est pas propre à cette fiche.")
+    if google_on(c, f, sigs):
+        L.append("Changement Google en Europe : ce client n’a pas encore reçu l’information, le paragraphe est ajouté au message.")
     al = []
     if not f:
         al.append("pas de fiche Local Nord reliée : aucun chiffre disponible")
@@ -336,12 +336,17 @@ def pour_toi(c, f, key, why, sigs=(), today=None):
 
 
 G_FIN = "Google modifie l’affichage de ses résultats en Europe pour se conformer à une nouvelle réglementation européenne."
-GOOGLE_INFO = False          # True = ajoute le paragraphe « baisse Google en Europe » aux messages (désactivé le 10/11/2026 : les messages suivent le prompt d’Émilie)
+GOOGLE_INFO = True           # paragraphe « changement Google en Europe » : ajouté UNIQUEMENT aux clients dont les vues baissent et qui ne l’ont jamais reçu (fichier google_informes.json)
 
 
-def google_wrap(par, c, f):
+def google_on(c, f, sigs=()):
+    """Vrai si ce client doit recevoir le paragraphe : vues en baisse, jamais informé, fiche reliée hors Suisse."""
+    return bool(GOOGLE_INFO and f and not f.get("ch") and not c.get("ginf") and ("vues" in sigs or "chute" in sigs))
+
+
+def google_wrap(par, c, f, sigs=()):
     """Ajoute aux messages écrits l’information sur la baisse générale des vues Google en Europe. Jamais pour une fiche suisse, ni sans fiche reliée."""
-    if not f or f.get("ch") or len(par) < 2 or par[-1] != SIG:
+    if not google_on(c, f, sigs) or len(par) < 2 or par[-1] != SIG:
         return par
     k = c.get("kpi") or {}
     chute = k.get("chg") is not None and k["chg"] <= -15
@@ -383,7 +388,7 @@ def compose(c, key, pos, kind, wd=None, why="", f=None, sigs=()):
     par = message_phase(c, f, pos, kind, hello, tuple(sigs) + (("avis",) if key == "avis" else ()))
     if key == "rdv":
         par = par[:-2] + ["Nous reviendrons vers vous très prochainement pour fixer la date de votre bilan.", SIG]
-    return google_wrap(par, c, f) if GOOGLE_INFO else par
+    return google_wrap(par, c, f, sigs)
 
 
 def box_label(par):
