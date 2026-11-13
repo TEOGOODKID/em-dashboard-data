@@ -512,6 +512,13 @@ def build(pack, today, last_full, mode=""):
                 f_ = fiches.get(r["c"].get("lnid")) if r["c"].get("lnid") else None
                 t += ["  " + ligne for p in (ia_msg(r["c"]) or compose(r["c"], r["key"], r["pos"], r["kind"], r["ft"].get("wd"), reason_text(r["key"], r["ft"]), f_, r["sigs"])) for ligne in (p, "")]
                 t += ["  POUR TOI (interne) :"] + ["   - " + x for x in (ia_note(r["c"]) or pour_toi(r["c"], f_, r["key"], reason_text(r["key"], r["ft"]), r["sigs"], today))] + [""]
+    # liste complète pour la routine des messages (noms et raisons seulement, tous les clients rouges et jaunes, dans l'ordre du dashboard)
+    t += ["LISTE COMPLÈTE (pour la routine)", "-" * 32]
+    for titre, lst in (("ROUGES", reds), ("JAUNES", yell)):
+        t.append(f"{titre} ({len(lst)})")
+        for r in lst:
+            t.append(f"* {r['c'].get('nom')} : " + " ; ".join(reason_text(k, r['ft']) for k in sorted(r['sigs'], key=lambda k: PRIO.index(k) if k in PRIO else 99)[:3]))
+        t.append("")
     return subject, "".join(h), "\n".join(t), {"rouges": len(reds), "jaunes": len(yell), "contactes": contacted, "verts": greens}
 
 
