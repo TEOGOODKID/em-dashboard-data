@@ -253,14 +253,7 @@ def etape_suivante(ph, d, today=None):
         return []
     if ph == "etude":
         return ["Prochaines étapes : un message stratégie à 30 jours, un point à 2 mois et le bilan à 3 mois."]
-    t = today or dt.date.today()
-    debut = t - dt.timedelta(days=d)
-    for n in ((2,) if ph == "strategie" else (3,) if ph == "resultats" else (3, 6, 12)):
-        dn = _add_months(debut, n)
-        if dn > t:
-            lead = "Le bilan à 2 mois est prévu le " if ph == "strategie" else "Le bilan à 3 mois est prévu le " if ph == "resultats" else f"Le prochain bilan, à {n} mois, est prévu le "
-            return [lead + _fr_date(dn) + "."]
-    return []
+    return []                                                              # plus de date de bilan dans les messages : c’est l’équipe qui la donne elle-même au client
 
 
 def message_phase(c, f, pos, kind, hello, sigs=()):
@@ -437,7 +430,7 @@ def build(pack, today, last_full, mode=""):
             greens += 1
             continue
         ct, wd = c.get("ct_j"), ft.get("wd")
-        if (ct is not None and ct <= 7 and (wd is None or ct <= wd)) or treated_by(c, ft, marks, today):
+        if (color != "rouge" and ct is not None and ct <= 7 and (wd is None or ct <= wd)) or treated_by(c, ft, marks, today):      # un rouge ne sort pas tout seul après une réponse : il reste jusqu’au clic ou 14 jours
             contacted += 1
             continue
         key = next((k for k in PRIO if k in sigs and (color != "rouge" or k in CALL_KEYS)), sigs[0] if sigs else "win")
