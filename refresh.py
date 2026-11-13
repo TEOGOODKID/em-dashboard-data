@@ -1,4 +1,4 @@
-# VERSION 10 novembre 2026 (messages du prompt d’Émilie, règle 1,5 mois) : liens client/fiche (téléphone, entreprise, portail), plusieurs fiches par client, faits positifs élargis
+# VERSION 14 novembre 2026 (mise à jour finale : rouge 14 jours, messages IA) : liens client/fiche (téléphone, entreprise, portail), plusieurs fiches par client, faits positifs élargis
 # -*- coding: utf-8 -*-
 """Actualisation du dashboard Elite Média.
 
@@ -566,7 +566,20 @@ def clients_from_ghl(opps, stages, field_ids, fiches, now):
         is_stale = bool(etape_j is not None and etape_j >= STALE_STAGE_DAYS and maj_j is not None and maj_j >= STALE_UPDATE_DAYS
                         and not SETUP_RE.search(etape) and not (wa_c and wa_d is not None and wa_d <= 30) and not (dm_j is not None and dm_j < 30))
         lnid, lnm = link_fiche(o, val("ID Local Nord"), known, by_name)
+        ia_fields = {}                                                 # messages écrits par l’IA (champs GoHighLevel facultatifs : absents = on garde le message calculé)
+        ia_msg_v = str(val("Message CSM (auto)") or "").strip()
+        ia_inf_v = str(val("Message CSM - Infos") or "").strip()
+        mi = re.match(r"\s*(\d{4}-\d{2}-\d{2})", ia_inf_v)
+        if ia_msg_v and mi:
+            try:
+                ia_dt = dt.datetime.fromisoformat(mi.group(1) + "T00:00:00+00:00")
+                ia_fields = {"ia_msg": ia_msg_v, "ia_diag": str(val("Diagnostic CSM (auto)") or "").strip() or None,
+                             "ia_note": str(val("Pour toi CSM (auto)") or "").strip() or None,
+                             "ia_inf": ia_inf_v[:120], "ia_j": _days(ia_dt, now)}
+            except ValueError:
+                ia_fields = {}
         out.append({
+            **ia_fields,
             "id": o["id"], "nom": str(o.get("name") or ""), "etape": etape,
             "age_m": round(_days(start, exp) / 30.44, 1) if start else 0,
             "rrm": rrm, "sat": sat, "gmb": val("Situation GMB") or "", "acces": val("Accès GMB") or "",
@@ -742,7 +755,7 @@ def load_previous(pw, today):
 
 # =========================================================================== comptes et rôles
 SETUP_RE = re.compile(r"SET UP GMB|Set up GMB|Appel Onboarding|Relance after|CLOSING", re.I)
-SENSITIVE = ("sat", "no_rep", "ct_j", "dm_j", "maj_j", "nt_j", "wa_c", "wa_d", "wa_t", "pf", "pfp")           # infos de churn : réservées à l'admin et au CSM
+SENSITIVE = ("sat", "no_rep", "ct_j", "dm_j", "maj_j", "nt_j", "wa_c", "wa_d", "wa_t", "pf", "pfp", "ia_msg", "ia_diag", "ia_note", "ia_inf", "ia_j")           # infos de churn : réservées à l'admin et au CSM
 ROLES = {
     "admin": {"tabs": ["today", "clients", "setup", "renew", "overview", "sectors", "compare", "week", "rank", "reports", "table", "accounts"],
               "reports": ["client", "week", "dir"], "first": "today"},
@@ -935,20 +948,19 @@ def feu_of(ft, W=DEF_W):
         add("chute", W["chute"])
     wa, wd = ft.get("wa"), ft.get("wd")
     if wa and wd is not None and wd <= 30:
-        if wa == "RESIL":
+        if wa == "RESIL" and wd <= 14:                                   # demande d’arrêt : rouge pendant 14 jours (ou jusqu’au clic « Traité »)
             add("wa_resil", W["war"])
             flag = flag or W["war"] > 0
-        elif wa == "REMB":
+        elif wa == "REMB" and wd <= 14:                                  # prélèvement contesté ou suspendu : vrai risque de churn, 14 jours
             add("wa_remb", W["wam"])
+            flag = flag or W["wam"] > 0
         elif wa == "DECU":
             add("wa_decu", W["wad"])
-        elif wa == "ATTE" and wd <= WA_SHORT_DAYS:
-            add("wa_atte", W.get("att", 3))
-        elif wa == "PAIE" and wd <= WA_SHORT_DAYS:
-            add("wa_paie", W.get("pai", 3))
+        # « demande en attente » (ATTE) et « paiement échoué » (PAIE) ne comptent plus : l’équipe voit déjà les messages, le recouvrement s’occupe des paiements
     if ft.get("dm") is not None and ft["dm"] >= 30:
         add("silence", W["sil"])
-    return ("rouge" if flag or pts >= W["thr_r"] else ("jaune" if pts >= W["thr_j"] else "vert")), sigs
+    # ROUGE = vrai risque de churn uniquement (demande d’arrêt, remboursement ou prélèvement contesté, « risque de churn » noté). Les autres signaux, même nombreux, donnent au plus du jaune.
+    return ("rouge" if flag else ("jaune" if pts >= W["thr_j"] else "vert")), sigs
 
 
 def load_history(pw):
