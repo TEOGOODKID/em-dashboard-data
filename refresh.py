@@ -1,4 +1,4 @@
-# VERSION 14 novembre 2026 (mise à jour finale : rouge 14 jours, messages IA) : liens client/fiche (téléphone, entreprise, portail), plusieurs fiches par client, faits positifs élargis
+# VERSION 14 novembre 2026 (rouge jusqu’à la réponse de l’équipe puis 14 jours, messages IA) : liens client/fiche (téléphone, entreprise, portail), plusieurs fiches par client, faits positifs élargis
 # -*- coding: utf-8 -*-
 """Actualisation du dashboard Elite Média.
 
@@ -946,17 +946,20 @@ def feu_of(ft, W=DEF_W):
         add("avis", W["avis"])
     if ft.get("ch") is not None and ft["ch"] <= -0.35:
         add("chute", W["chute"])
-    wa, wd = ft.get("wa"), ft.get("wd")
-    if wa and wd is not None and wd <= 30:
-        if wa == "RESIL" and wd <= 14:                                   # demande d’arrêt : rouge pendant 14 jours (ou jusqu’au clic « Traité »)
-            add("wa_resil", W["war"])
-            flag = flag or W["war"] > 0
-        elif wa == "REMB" and wd <= 14:                                  # prélèvement contesté ou suspendu : vrai risque de churn, 14 jours
-            add("wa_remb", W["wam"])
-            flag = flag or W["wam"] > 0
-        elif wa == "DECU":
-            add("wa_decu", W["wad"])
-        # « demande en attente » (ATTE) et « paiement échoué » (PAIE) ne comptent plus : l’équipe voit déjà les messages, le recouvrement s’occupe des paiements
+    wa, wd, ct = ft.get("wa"), ft.get("wd"), ft.get("ct")
+    if wa in ("RESIL", "REMB") and wd is not None:
+        # ROUGE tant que l’équipe n’a pas répondu après la demande (60 jours au plus), puis encore 14 jours après sa réponse (ou jusqu’au clic « Traité »)
+        sans_reponse = ct is None or ct > wd
+        if (wd <= 60) if sans_reponse else (ct <= 14):
+            if wa == "RESIL":                                            # demande d’arrêt
+                add("wa_resil", W["war"])
+                flag = flag or W["war"] > 0
+            else:                                                        # prélèvement contesté ou suspendu : vrai risque de churn
+                add("wa_remb", W["wam"])
+                flag = flag or W["wam"] > 0
+    elif wa == "DECU" and wd is not None and wd <= 30:
+        add("wa_decu", W["wad"])
+    # « demande en attente » (ATTE) et « paiement échoué » (PAIE) ne comptent plus : l’équipe voit déjà les messages, le recouvrement s’occupe des paiements
     if ft.get("dm") is not None and ft["dm"] >= 30:
         add("silence", W["sil"])
     # ROUGE = vrai risque de churn uniquement (demande d’arrêt, remboursement ou prélèvement contesté, « risque de churn » noté). Les autres signaux, même nombreux, donnent au plus du jaune.
