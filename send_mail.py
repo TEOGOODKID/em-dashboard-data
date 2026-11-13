@@ -86,6 +86,19 @@ def fetch_marks():
         return {}
 
 
+def ia_msg(c):
+    """Message écrit par l’IA et encore frais (7 jours) : il remplace le message calculé."""
+    if c.get("ia_msg") and c.get("ia_j") is not None and c["ia_j"] <= 7:
+        return [p for p in re.split(r"\n\s*\n", str(c["ia_msg"]).strip()) if p.strip()]
+    return None
+
+
+def ia_note(c):
+    if c.get("ia_note") and c.get("ia_msg") and c.get("ia_j") is not None and c["ia_j"] <= 7:
+        return [l.strip(" -•") for l in str(c["ia_note"]).splitlines() if l.strip()]
+    return None
+
+
 def treated_by(c, ft, marks, built):
     """Marque « Traité » encore valable : posée il y a 7 jours ou moins, et sans nouvelle alerte WhatsApp depuis."""
     m = marks.get(str(c.get("id")))
@@ -95,7 +108,8 @@ def treated_by(c, ft, marks, built):
         at = dt.datetime.fromisoformat(str(m["at"]).replace("Z", "+00:00"))
     except (KeyError, ValueError):
         return None
-    if (dt.datetime.now(dt.timezone.utc) - at).total_seconds() > 7 * 86400:
+    limite = None if c.get("wa_c") in ("RESIL", "REMB") else 7 * 86400          # demande d’arrêt ou remboursement : « Traité » vaut jusqu’à une nouvelle alerte
+    if limite is not None and (dt.datetime.now(dt.timezone.utc) - at).total_seconds() > limite:
         return None
     wd = ft.get("wd")
     if c.get("wa_c") and wd is not None:
@@ -180,7 +194,7 @@ def reason_text(key, ft):
     }.get(key, key)
 
 
-CALL_KEYS = ("wa_resil", "wa_remb", "wa_decu", "flag", "sat")      # cas où l'on appelle d'abord : un brief, pas de message écrit
+CALL_KEYS = ("wa_resil", "wa_remb", "flag")      # cas rouges (vrais risques de churn) : un brief d'appel, pas de message écrit
 DROP_KEYS = ("chute", "vues")
 
 
@@ -426,7 +440,7 @@ def build(pack, today, last_full, mode=""):
         if (ct is not None and ct <= 7 and (wd is None or ct <= wd)) or treated_by(c, ft, marks, today):
             contacted += 1
             continue
-        key = next((k for k in PRIO if k in sigs), sigs[0] if sigs else "win")
+        key = next((k for k in PRIO if k in sigs and (color != "rouge" or k in CALL_KEYS)), sigs[0] if sigs else "win")
         pts = sum(refresh.DEF_W.get(WKEY.get(k, k), 0) for k in sigs)
         pos, kind, src = (c["pos"], c.get("pos_k"), "Statistiques Google et fiche reliée") if c.get("pos") else positives(c, fiches)
         rows.append({"c": c, "ft": ft, "color": color, "key": key, "pts": pts, "sigs": sigs, "pos": pos, "kind": kind, "src": src})
@@ -445,8 +459,8 @@ def build(pack, today, last_full, mode=""):
 
     def box(r, bg, border):
         f = fiches.get(r["c"].get("lnid")) if r["c"].get("lnid") else None
-        msg = compose(r["c"], r["key"], r["pos"], r["kind"], r["ft"].get("wd"), reason_text(r["key"], r["ft"]), f, r["sigs"])
-        note = pour_toi(r["c"], f, r["key"], reason_text(r["key"], r["ft"]), r["sigs"], today)
+        msg = ia_msg(r["c"]) or compose(r["c"], r["key"], r["pos"], r["kind"], r["ft"].get("wd"), reason_text(r["key"], r["ft"]), f, r["sigs"])
+        note = ia_note(r["c"]) or pour_toi(r["c"], f, r["key"], reason_text(r["key"], r["ft"]), r["sigs"], today)
         body = "<br><br>".join(esc(p) for p in msg)
         s = f'<div style="font-size:10px;font-weight:700;color:#566070;letter-spacing:.04em;margin-bottom:4px">{box_label(msg)}</div><div style="font-size:13px;line-height:1.5;background:#ffffff;border:1px solid {border};border-radius:8px;padding:10px 12px">{body}</div>'
         s += ('<div style="font-size:10px;font-weight:700;color:#566070;letter-spacing:.04em;margin:8px 0 3px">POUR TOI (INTERNE)</div><div style="font-size:12px;line-height:1.45;color:#3b4252;background:#f6f5f1;border-radius:8px;padding:8px 10px">'
@@ -496,8 +510,8 @@ def build(pack, today, last_full, mode=""):
             for r in lst:
                 t.append(f"* {r['c'].get('nom')} : " + " ; ".join(reason_text(k, r['ft']) for k in sorted(r['sigs'], key=lambda k: PRIO.index(k) if k in PRIO else 99)[:3]))
                 f_ = fiches.get(r["c"].get("lnid")) if r["c"].get("lnid") else None
-                t += ["  " + ligne for p in compose(r["c"], r["key"], r["pos"], r["kind"], r["ft"].get("wd"), reason_text(r["key"], r["ft"]), f_, r["sigs"]) for ligne in (p, "")]
-                t += ["  POUR TOI (interne) :"] + ["   - " + x for x in pour_toi(r["c"], f_, r["key"], reason_text(r["key"], r["ft"]), r["sigs"], today)] + [""]
+                t += ["  " + ligne for p in (ia_msg(r["c"]) or compose(r["c"], r["key"], r["pos"], r["kind"], r["ft"].get("wd"), reason_text(r["key"], r["ft"]), f_, r["sigs"])) for ligne in (p, "")]
+                t += ["  POUR TOI (interne) :"] + ["   - " + x for x in (ia_note(r["c"]) or pour_toi(r["c"], f_, r["key"], reason_text(r["key"], r["ft"]), r["sigs"], today))] + [""]
     return subject, "".join(h), "\n".join(t), {"rouges": len(reds), "jaunes": len(yell), "contactes": contacted, "verts": greens}
 
 
