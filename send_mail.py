@@ -108,6 +108,33 @@ def paragraphes(texte):
             cur, cur_liste = [ligne.rstrip()], est_liste
     if cur:
         out.append("\n".join(cur))
+    return [q for p in out for q in _coupe(p)]
+
+
+_FIN_PHRASE = re.compile(r"(?<=[.!?])\s+(?=[A-ZÀ-ÖØ-Þ«“\"]|[\u2190-\u2bff\U0001F000-\U0001FAFF])")
+
+
+def _n(t):
+    """Longueur comptée comme dans la page (les émojis comptent 2) : même découpage dans le mail et sur le dashboard."""
+    return len(t.encode("utf-16-le")) // 2
+
+
+def _coupe(p, maxlen=260, cible=220):
+    """Un paragraphe trop long (plus de 260 caractères) est coupé entre deux phrases, en blocs d’environ 220 caractères : plus de « gros blocs »."""
+    if _n(p) <= maxlen or "\n" in p or _LISTE.match(p):
+        return [p]
+    phrases = _FIN_PHRASE.split(p)
+    if len(phrases) < 2:
+        return [p]
+    out, cur = [], ""
+    for s in phrases:
+        if cur and _n(cur) + 1 + _n(s) > cible:
+            out.append(cur)
+            cur = s
+        else:
+            cur = (cur + " " + s) if cur else s
+    if cur:
+        out.append(cur)
     return out
 
 
