@@ -1,4 +1,4 @@
-# VERSION 14 novembre 2026 (rouge jusqu’à la réponse de l’équipe puis 14 jours, messages IA) : liens client/fiche (téléphone, entreprise, portail), plusieurs fiches par client, faits positifs élargis
+# VERSION 15 novembre 2026 (vues en baisse seulement si jamais informé, appels et itinéraires en baisse) : liens client/fiche (téléphone, entreprise, portail), plusieurs fiches par client, faits positifs élargis
 # -*- coding: utf-8 -*-
 """Actualisation du dashboard Elite Média.
 
@@ -839,10 +839,10 @@ def write_user_files(pack, raw_users, out_dir):
 # d'autres réglages et mesurer, après quelques semaines, quels signaux annoncent vraiment un départ.
 # Le fichier est chiffré (mot de passe du dashboard) et versionné dans le dépôt : history/feux.enc
 HIST_PATH = os.environ.get("HIST_PATH", "history/feux.enc")
-DEF_W = {"war": 4, "wam": 3, "wad": 2, "att": 3, "pai": 3, "sil": 1, "flag": 4, "sat": 2, "win": 1, "nrep": 2, "ech1": 2, "ech2": 3, "rdv": 1, "maj60": 1, "vues": 2, "avis": 2, "chute": 2, "thr_j": 2, "thr_r": 4}
+DEF_W = {"war": 4, "wam": 3, "wad": 2, "att": 3, "pai": 3, "sil": 1, "flag": 4, "sat": 2, "win": 1, "nrep": 2, "ech1": 2, "ech2": 3, "rdv": 1, "maj60": 1, "vues": 2, "act": 2, "avis": 2, "chute": 2, "thr_j": 2, "thr_r": 4}
 SIGNALS = [("flag", "« Risque de churn » noté"), ("sat", "Satisfaction basse (30 ou 50 %)"), ("win", "Mensuel, mois 2 à 4"), ("nrep", "Sans réponse (étiquette)"),
            ("ech1", "Échéance dans 1 mois"), ("ech2", "Échéance dans 7 jours"), ("rdv", "RDV bilan à planifier"), ("maj60", "Aucune mise à jour depuis 60 jours"),
-           ("vues", "Vues en baisse de 20 % et plus (3 mois)"), ("avis", "Avis 1-2 étoiles récent"), ("chute", "Vues en chute sur 30 jours"),
+           ("vues", "Vues en baisse de 20 % et plus (3 mois), seulement si l’information Google n’a jamais été envoyée"), ("act", "Appels et itinéraires en baisse (28 jours, hors baisse générale)"), ("avis", "Avis 1-2 étoiles récent"), ("chute", "Vues en chute sur 30 jours"),
            ("wa_resil", "Demande d'arrêt sur WhatsApp"), ("wa_remb", "Remboursement ou prélèvement contesté (WhatsApp)"),
            ("wa_decu", "Déception exprimée sur WhatsApp"), ("silence", "Client silencieux depuis 30 jours")]
 
@@ -912,6 +912,7 @@ def client_features(pack, clients, today, last_full):
             "ev": round(ev, 3) if ev is not None else None, "lo": (lo.get(idx, 0) if f else None),
             "ch": round(chv, 3) if chv is not None else None, "f": 1 if f else 0, "v": c.get("val"),
             "wa": c.get("wa_c"), "wd": c.get("wa_d"),
+            "ac": c.get("ac"), "gi": 1 if (c.get("ginf") or (f and f.get("ch"))) else 0,
         })
     return out
 
@@ -940,12 +941,15 @@ def feu_of(ft, W=DEF_W):
         add("rdv", W["rdv"])
     if (ft.get("j") or 0) >= 60:
         add("maj60", W["maj60"])
-    if ft.get("ev") is not None and ft["ev"] <= -0.2:
+    informe = bool(ft.get("gi"))                                          # déjà informé du changement Google (ou fiche suisse) : une baisse de vues n’est plus une raison d’écrire
+    if not informe and ft.get("ev") is not None and ft["ev"] <= -0.2:
         add("vues", W["vues"])
     if ft.get("lo"):
         add("avis", W["avis"])
-    if ft.get("ch") is not None and ft["ch"] <= -0.35:
+    if not informe and ft.get("ch") is not None and ft["ch"] <= -0.35:
         add("chute", W["chute"])
+    if ft.get("ac") is not None and ft["ac"] <= -0.35:                    # vraie baisse des contacts (appels + itinéraires), mesurée contre le portefeuille
+        add("act", W.get("act", 2))
     wa, wd, ct = ft.get("wa"), ft.get("wd"), ft.get("ct")
     if wa in ("RESIL", "REMB") and wd is not None:
         # ROUGE tant que l’équipe n’a pas répondu après la demande (60 jours au plus), puis encore 14 jours après sa réponse (ou jusqu’au clic « Traité »)
@@ -1085,6 +1089,12 @@ def compute_facts(pack):
             if last - 59 <= d <= last and r_:
                 rev.setdefault(n, []).append(r_)
     pc = lambda x, y: round((x / y - 1) * 100)
+    # baisse des contacts (appels + itinéraires) sur 28 jours, comparée à celle du portefeuille : c’est elle, et non les vues, qui justifie d’écrire à un client
+    g_act = 1.0
+    if agg:
+        sa_c = sum(t_[2] + t_[6] for t_ in agg.values() if t_[3] + t_[7] >= 10)
+        sa_p = sum(t_[3] + t_[7] for t_ in agg.values() if t_[3] + t_[7] >= 10)
+        g_act = (sa_c / sa_p) if sa_p else 1.0
     for c in pack.get("clients") or []:
         i = idx.get(c.get("lnid"))
         ids = [x for x in [i] + [idx.get(y) for y in (c.get("lnx") or [])] if x is not None]
@@ -1092,6 +1102,9 @@ def compute_facts(pack):
         ts = [agg[x] for x in ids if x in agg]
         t = [sum(col) for col in zip(*ts)] if ts else None
         c["nfi"] = len(ids) if len(ids) > 1 else None
+        c["ac"] = None
+        if t and (t[3] + t[7]) >= 10 and not (c.get("age_m") is not None and c["age_m"] < 1.5):
+            c["ac"] = round(((t[2] + t[6]) / (t[3] + t[7])) / g_act - 1, 3)
         items, stats = [], False
         if t:
             if t[2] >= 5 and t[3] >= 1 and t[2] > t[3]:
