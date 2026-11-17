@@ -25,7 +25,7 @@ from email.utils import formataddr
 import refresh
 
 SIG = "L’équipe Elite Média"
-PRIO = ["wa_resil", "wa_atte", "wa_paie", "wa_remb", "wa_decu", "flag", "nrep", "silence", "ech2", "ech1", "rdv", "chute", "vues", "avis", "maj60", "sat", "win"]
+PRIO = ["wa_resil", "wa_atte", "wa_paie", "wa_remb", "wa_decu", "flag", "nrep", "silence", "ech2", "ech1", "rdv", "act", "chute", "vues", "avis", "maj60", "sat", "win"]
 WKEY = {"wa_resil": "war", "wa_remb": "wam", "wa_decu": "wad", "wa_atte": "att", "wa_paie": "pai", "silence": "sil"}
 FR = ["lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche"]
 MOIS = ["janvier", "février", "mars", "avril", "mai", "juin", "juillet", "août", "septembre", "octobre", "novembre", "décembre"]
@@ -86,10 +86,35 @@ def fetch_marks():
         return {}
 
 
+_LISTE = re.compile(r"^\s*(?:[•\-–]|[0-9]\ufe0f?\u20e3|[0-9]+[.)]|[\u2190-\u2bff\U0001F000-\U0001FAFF])")
+
+
+def paragraphes(texte):
+    """Remet un message écrit par l’IA en forme : une ligne vide entre deux paragraphes, même quand l’IA n’a mis que des retours simples ;
+    les lignes d’une même liste (✅, 1️⃣, puces) restent ensemble, à la ligne les unes sous les autres."""
+    out, cur, cur_liste = [], [], False
+    for ligne in str(texte).replace("\r", "").strip().split("\n"):
+        if not ligne.strip():
+            if cur:
+                out.append("\n".join(cur))
+            cur, cur_liste = [], False
+            continue
+        est_liste = bool(_LISTE.match(ligne))
+        if cur and est_liste and cur_liste:
+            cur.append(ligne.rstrip())
+        else:
+            if cur:
+                out.append("\n".join(cur))
+            cur, cur_liste = [ligne.rstrip()], est_liste
+    if cur:
+        out.append("\n".join(cur))
+    return out
+
+
 def ia_msg(c):
     """Message écrit par l’IA et encore frais (7 jours) : il remplace le message calculé."""
     if c.get("ia_msg") and c.get("ia_j") is not None and c["ia_j"] <= 7:
-        return [p for p in re.split(r"\n\s*\n", str(c["ia_msg"]).strip()) if p.strip()]
+        return paragraphes(c["ia_msg"])
     return None
 
 
@@ -186,6 +211,7 @@ def reason_text(key, ft):
         "ech2": "Échéance dans 7 jours",
         "ech1": "Échéance dans 1 mois",
         "rdv": "Bilan à planifier",
+        "act": f"Appels et itinéraires en baisse de {abs(round((ft.get('ac') or 0) * 100))} % sur 28 jours, hors baisse générale",
         "chute": "Vues en forte baisse sur 30 jours, bien plus que le portefeuille",
         "vues": f"Vues en baisse de {abs(round((ft.get('ev') or 0) * 100))} % sur 3 mois",
         "avis": f"{ft.get('lo')} avis négatif(s) récent(s)",
@@ -454,7 +480,7 @@ def build(pack, today, last_full, mode=""):
         f = fiches.get(r["c"].get("lnid")) if r["c"].get("lnid") else None
         msg = ia_msg(r["c"]) or compose(r["c"], r["key"], r["pos"], r["kind"], r["ft"].get("wd"), reason_text(r["key"], r["ft"]), f, r["sigs"])
         note = ia_note(r["c"]) or pour_toi(r["c"], f, r["key"], reason_text(r["key"], r["ft"]), r["sigs"], today)
-        body = "<br><br>".join(esc(p) for p in msg)
+        body = "<br><br>".join(esc(p).replace("\n", "<br>") for p in msg)
         s = f'<div style="font-size:10px;font-weight:700;color:#566070;letter-spacing:.04em;margin-bottom:4px">{box_label(msg)}</div><div style="font-size:13px;line-height:1.5;background:#ffffff;border:1px solid {border};border-radius:8px;padding:10px 12px">{body}</div>'
         s += ('<div style="font-size:10px;font-weight:700;color:#566070;letter-spacing:.04em;margin:8px 0 3px">POUR TOI (INTERNE)</div><div style="font-size:12px;line-height:1.45;color:#3b4252;background:#f6f5f1;border-radius:8px;padding:8px 10px">'
               + "<br>".join(("<b>" + esc(x) + "</b>") if x.startswith("À RAPPELER") else esc(x) for x in note) + "</div>")
@@ -503,7 +529,7 @@ def build(pack, today, last_full, mode=""):
             for r in lst:
                 t.append(f"* {r['c'].get('nom')} : " + " ; ".join(reason_text(k, r['ft']) for k in sorted(r['sigs'], key=lambda k: PRIO.index(k) if k in PRIO else 99)[:3]))
                 f_ = fiches.get(r["c"].get("lnid")) if r["c"].get("lnid") else None
-                t += ["  " + ligne for p in (ia_msg(r["c"]) or compose(r["c"], r["key"], r["pos"], r["kind"], r["ft"].get("wd"), reason_text(r["key"], r["ft"]), f_, r["sigs"])) for ligne in (p, "")]
+                t += ["  " + ligne for p in (ia_msg(r["c"]) or compose(r["c"], r["key"], r["pos"], r["kind"], r["ft"].get("wd"), reason_text(r["key"], r["ft"]), f_, r["sigs"])) for ligne in (*str(p).split("\n"), "")]
                 t += ["  POUR TOI (interne) :"] + ["   - " + x for x in (ia_note(r["c"]) or pour_toi(r["c"], f_, r["key"], reason_text(r["key"], r["ft"]), r["sigs"], today))] + [""]
     # liste complète pour la routine des messages (noms et raisons seulement, tous les clients rouges et jaunes, dans l'ordre du dashboard)
     t += ["LISTE COMPLÈTE (pour la routine)", "-" * 32]
