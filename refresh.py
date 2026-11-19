@@ -1,4 +1,4 @@
-# VERSION 15 novembre 2026 (vues en baisse seulement si jamais informé, appels et itinéraires en baisse) : liens client/fiche (téléphone, entreprise, portail), plusieurs fiches par client, faits positifs élargis
+# VERSION 19 novembre 2026 (téléphone du client copiable ; plus d’échéance proche ni de RDV bilan ; vues en baisse seulement si jamais informé, appels et itinéraires en baisse) : liens client/fiche (téléphone, entreprise, portail), plusieurs fiches par client, faits positifs élargis
 # -*- coding: utf-8 -*-
 """Actualisation du dashboard Elite Média.
 
@@ -592,6 +592,7 @@ def clients_from_ghl(opps, stages, field_ids, fiches, now):
             "val": o.get("monetaryValue") or None,
             "wa_c": wa_c, "wa_d": wa_d, "wa_t": wa_t,
             "cid": o.get("contactId") or None, "pf": pf_list, "pfp": pf_per, "_stale": is_stale,
+            "tel": (str((o.get("contact") or {}).get("phone") or "").strip() or None),                 # téléphone du client, affiché à côté de son nom (copie en un clic)
         })
     # --- un même client ne doit apparaître qu'une fois : on garde son dossier le mieux suivi (pas dormant, puis le plus récemment mis à jour)
     best = {}
@@ -755,7 +756,7 @@ def load_previous(pw, today):
 
 # =========================================================================== comptes et rôles
 SETUP_RE = re.compile(r"SET UP GMB|Set up GMB|Appel Onboarding|Relance after|CLOSING", re.I)
-SENSITIVE = ("sat", "no_rep", "ct_j", "dm_j", "maj_j", "nt_j", "wa_c", "wa_d", "wa_t", "pf", "pfp", "ia_msg", "ia_diag", "ia_note", "ia_inf", "ia_j")           # infos de churn : réservées à l'admin et au CSM
+SENSITIVE = ("sat", "no_rep", "ct_j", "dm_j", "maj_j", "nt_j", "wa_c", "wa_d", "wa_t", "pf", "pfp", "ia_msg", "ia_diag", "ia_note", "ia_inf", "ia_j", "tel")           # infos de churn : réservées à l'admin et au CSM
 ROLES = {
     "admin": {"tabs": ["today", "clients", "setup", "renew", "overview", "sectors", "compare", "week", "rank", "reports", "table", "accounts"],
               "reports": ["client", "week", "dir"], "first": "today"},
@@ -933,12 +934,8 @@ def feu_of(ft, W=DEF_W):
         add("win", W["win"])
     if ft.get("n"):
         add("nrep", W["nrep"])
-    if re.search(r"Reste 7 jours", e, re.I):
-        add("ech2", W["ech2"])
-    elif re.search(r"Reste 1 mois", e, re.I):
-        add("ech1", W["ech1"])
-    if re.search(r"RDV \d ?mois à traiter", e, re.I):
-        add("rdv", W["rdv"])
+    # « échéance dans 7 jours / 1 mois » : retiré du dashboard (aucun intérêt, décision de Téo)
+    # « RDV bilan à planifier » : retiré du dashboard (déjà traité automatiquement, aucun intérêt : décision de Téo)
     if (ft.get("j") or 0) >= 60:
         add("maj60", W["maj60"])
     informe = bool(ft.get("gi"))                                          # déjà informé du changement Google (ou fiche suisse) : une baisse de vues n’est plus une raison d’écrire
