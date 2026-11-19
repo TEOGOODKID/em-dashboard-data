@@ -145,9 +145,22 @@ def ia_msg(c):
     return None
 
 
+_INTERDIT = re.compile(r"(?:nous|on|je)\s+(?:vous\s+)?(?:rappelons|appelons|rappelle|appelle|contactons|joignons|recontactons)|(?:un|notre|cet|ce)\s+(?:petit\s+)?(?:appel|échange téléphonique|rappel)\b|appelez-nous|nous\s+reviendrons\s+vers\s+vous|(?:prochain|prochaine)\s+bilan|bilan\s+(?:est\s+|sera\s+)?prévu|vous\s+recevrez\s+(?:votre|le|un|ce)\s+(?:rapport|bilan)|rapport\s+(?:vous\s+sera|sera)\s+(?:envoy|remis)", re.I)
+
+
+def formule_interdite(texte):
+    """Garde-fou : appel proposé, « nous reviendrons vers vous », prochain bilan, date de rapport. Renvoie la formule trouvée, sinon None."""
+    m = _INTERDIT.search(str(texte or ""))
+    return m.group(0) if m else None
+
+
 def ia_note(c):
-    if c.get("ia_note") and c.get("ia_msg") and c.get("ia_j") is not None and c["ia_j"] <= 7:
-        return [l.strip(" -•") for l in str(c["ia_note"]).splitlines() if l.strip()]
+    if c.get("ia_msg") and c.get("ia_j") is not None and c["ia_j"] <= 7:
+        lignes = [l.strip(" -•") for l in str(c.get("ia_note") or "").splitlines() if l.strip()]
+        f = formule_interdite(c["ia_msg"])
+        if f:
+            lignes.insert(0, "⚠ À VÉRIFIER : ce message contient « " + f + " » (formule interdite : appel proposé, prochain bilan ou date de rapport). À corriger avant envoi.")
+        return lignes or None
     return None
 
 
@@ -304,9 +317,7 @@ def etape_suivante(ph, d, today=None):
     """Prochaine étape datée, comme dans le prompt d’Émilie (étude : jalons ; stratégie : bilan à 2 mois ; résultats : bilan à 3 mois ; bilan : prochain bilan). Jamais de compte à rebours."""
     if ph is None or d is None:
         return []
-    if ph == "etude":
-        return ["Prochaines étapes : un message stratégie à 30 jours, un point à 2 mois et le bilan à 3 mois."]
-    return []                                                              # plus de date de bilan dans les messages : c’est l’équipe qui la donne elle-même au client
+    return []                                                              # jamais de date ni de calendrier de bilan ou de rapport dans les messages : c’est l’équipe qui les donne elle-même au client
 
 
 def message_phase(c, f, pos, kind, hello, sigs=()):
@@ -446,8 +457,6 @@ def compose(c, key, pos, kind, wd=None, why="", f=None, sigs=()):
     if key == "wa_atte":
         return [hello, "Merci pour votre message et pour votre patience. Je prends votre demande en charge aujourd’hui et je vous réponds au plus vite.", SIG]
     par = message_phase(c, f, pos, kind, hello, tuple(sigs) + (("avis",) if key == "avis" else ()))
-    if key == "rdv":
-        par = par[:-2] + ["Nous reviendrons vers vous très prochainement pour fixer la date de votre bilan.", SIG]
     return google_wrap(par, c, f, sigs)
 
 
