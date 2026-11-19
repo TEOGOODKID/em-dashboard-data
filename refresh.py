@@ -1,4 +1,4 @@
-# VERSION 19 novembre 2026 (téléphone du client copiable ; plus d’échéance proche ni de RDV bilan ; vues en baisse seulement si jamais informé, appels et itinéraires en baisse) : liens client/fiche (téléphone, entreprise, portail), plusieurs fiches par client, faits positifs élargis
+# VERSION 19 novembre 2026 (score de risque manuel lu depuis GoHighLevel ; plus d’échéance proche ; téléphone du client copiable ; plus d’échéance proche ni de RDV bilan ; vues en baisse seulement si jamais informé, appels et itinéraires en baisse) : liens client/fiche (téléphone, entreprise, portail), plusieurs fiches par client, faits positifs élargis
 # -*- coding: utf-8 -*-
 """Actualisation du dashboard Elite Média.
 
@@ -566,6 +566,9 @@ def clients_from_ghl(opps, stages, field_ids, fiches, now):
         is_stale = bool(etape_j is not None and etape_j >= STALE_STAGE_DAYS and maj_j is not None and maj_j >= STALE_UPDATE_DAYS
                         and not SETUP_RE.search(etape) and not (wa_c and wa_d is not None and wa_d <= 30) and not (dm_j is not None and dm_j < 30))
         lnid, lnm = link_fiche(o, val("ID Local Nord"), known, by_name)
+        # score de risque posé à la main sur la fiche GoHighLevel (champ « Score de risque » : Faible, Moyen, Élevé) : facultatif, absent = 0
+        rk_txt = str(val("Score de risque") or "").lower()
+        rk = 2 if re.search(r"élev|elev|haut|fort", rk_txt) else (1 if re.search(r"moy", rk_txt) else 0)
         ia_fields = {}                                                 # messages écrits par l’IA (champs GoHighLevel facultatifs : absents = on garde le message calculé)
         ia_msg_v = str(val("Message CSM (auto)") or "").strip()
         ia_inf_v = str(val("Message CSM - Infos") or "").strip()
@@ -592,6 +595,7 @@ def clients_from_ghl(opps, stages, field_ids, fiches, now):
             "val": o.get("monetaryValue") or None,
             "wa_c": wa_c, "wa_d": wa_d, "wa_t": wa_t,
             "cid": o.get("contactId") or None, "pf": pf_list, "pfp": pf_per, "_stale": is_stale,
+            "rk": rk,
             "tel": (str((o.get("contact") or {}).get("phone") or "").strip() or None),                 # téléphone du client, affiché à côté de son nom (copie en un clic)
         })
     # --- un même client ne doit apparaître qu'une fois : on garde son dossier le mieux suivi (pas dormant, puis le plus récemment mis à jour)
@@ -756,7 +760,7 @@ def load_previous(pw, today):
 
 # =========================================================================== comptes et rôles
 SETUP_RE = re.compile(r"SET UP GMB|Set up GMB|Appel Onboarding|Relance after|CLOSING", re.I)
-SENSITIVE = ("sat", "no_rep", "ct_j", "dm_j", "maj_j", "nt_j", "wa_c", "wa_d", "wa_t", "pf", "pfp", "ia_msg", "ia_diag", "ia_note", "ia_inf", "ia_j", "tel")           # infos de churn : réservées à l'admin et au CSM
+SENSITIVE = ("sat", "no_rep", "ct_j", "dm_j", "maj_j", "nt_j", "wa_c", "wa_d", "wa_t", "pf", "pfp", "ia_msg", "ia_diag", "ia_note", "ia_inf", "ia_j", "tel", "rk")           # infos de churn : réservées à l'admin et au CSM
 ROLES = {
     "admin": {"tabs": ["today", "clients", "setup", "renew", "overview", "sectors", "compare", "week", "rank", "reports", "table", "accounts"],
               "reports": ["client", "week", "dir"], "first": "today"},
@@ -914,6 +918,7 @@ def client_features(pack, clients, today, last_full):
             "ch": round(chv, 3) if chv is not None else None, "f": 1 if f else 0, "v": c.get("val"),
             "wa": c.get("wa_c"), "wd": c.get("wa_d"),
             "ac": c.get("ac"), "gi": 1 if (c.get("ginf") or (f and f.get("ch"))) else 0,
+            "rk": c.get("rk") or 0,
         })
     return out
 
@@ -934,7 +939,8 @@ def feu_of(ft, W=DEF_W):
         add("win", W["win"])
     if ft.get("n"):
         add("nrep", W["nrep"])
-    # « échéance dans 7 jours / 1 mois » : retiré du dashboard (aucun intérêt, décision de Téo)
+    # « échéance proche » : retirée du dashboard (aucun intérêt : décision de Téo du 19/11, déjà suivi dans le tableau d’Émilie)
+    # Le score de risque (champ GoHighLevel « Score de risque ») est lu et affiché ; il pourra servir plus tard à pondérer d’autres feux.
     # « RDV bilan à planifier » : retiré du dashboard (déjà traité automatiquement, aucun intérêt : décision de Téo)
     if (ft.get("j") or 0) >= 60:
         add("maj60", W["maj60"])
